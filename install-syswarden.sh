@@ -2397,8 +2397,8 @@ EOF
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-jndi-ssti.conf" ]]; then
                 cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-jndi-ssti.conf
 [Definition]
-failregex = ^<HOST> .* "(?:GET|POST|HEAD|PUT) .*(?:\$\{jndi:|%24%7Bjndi:|class\.module\.classLoader|%24%7Bspring\.macro).* HTTP/.*" \d{3} .*$
-            ^<HOST> .* ".*" \d{3} .* "(?:\$\{jndi:|%24%7Bjndi:).*"$
+failregex = ^<HOST> .* "(?:GET|POST|HEAD|PUT) .*(?:\$\{jndi:|\x2524\x257Bjndi:|class\.module\.classLoader|\x2524\x257Bspring\.macro).* HTTP/.*" \d{3} .*$
+            ^<HOST> .* ".*" \d{3} .* "(?:\$\{jndi:|\x2524\x257Bjndi:).*"$
 ignoreregex = 
 EOF
             fi
