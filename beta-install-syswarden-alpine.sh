@@ -2781,16 +2781,26 @@ SYS_RAM_USED=$(free -m | awk '/^Mem:/{print $3}')
 SYS_RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
 
 L3_STANDARD=0; L3_GEOIP=0; L3_ASN=0
-[[ -f "$SYSWARDEN_DIR/blacklist.txt" ]] && L3_STANDARD=$(wc -l < "$SYSWARDEN_DIR/blacklist.txt")
-[[ -f "$SYSWARDEN_DIR/geoip.txt" ]] && L3_GEOIP=$(wc -l < "$SYSWARDEN_DIR/geoip.txt")
-[[ -f "$SYSWARDEN_DIR/asn.txt" ]] && L3_ASN=$(wc -l < "$SYSWARDEN_DIR/asn.txt")
+
+# FIX: Using proper IF blocks instead of '&&' to prevent 'set -e' from killing the script
+if [[ -f "$SYSWARDEN_DIR/blocklist.txt" ]]; then
+    L3_STANDARD=$(wc -l < "$SYSWARDEN_DIR/blocklist.txt")
+fi
+
+if [[ -f "$SYSWARDEN_DIR/geoip.txt" ]]; then
+    L3_GEOIP=$(wc -l < "$SYSWARDEN_DIR/geoip.txt")
+fi
+
+if [[ -f "$SYSWARDEN_DIR/asn.txt" ]]; then
+    L3_ASN=$(wc -l < "$SYSWARDEN_DIR/asn.txt")
+fi
 
 L7_TOTAL_BANNED=0; L7_ACTIVE_JAILS=0; JAIL_JSON_ARRAY=""
 if command -v fail2ban-client >/dev/null && fail2ban-client ping >/dev/null 2>&1; then
     JAIL_LIST=$(fail2ban-client status | grep "Jail list:" | sed 's/.*Jail list:[ \t]*//' | tr -d ',')
     for JAIL in $JAIL_LIST; do
         ((L7_ACTIVE_JAILS++))
-        BANNED_COUNT=$(fail2ban-client status "$JAIL" | grep "Currently banned:" | awk '{print $4}')
+        BANNED_COUNT=$(fail2ban-client status "$JAIL" | grep "Currently banned:" | awk '{print $4}' || echo "0")
         BANNED_COUNT=${BANNED_COUNT:-0}
         L7_TOTAL_BANNED=$((L7_TOTAL_BANNED + BANNED_COUNT))
         if [[ "$BANNED_COUNT" -gt 0 ]]; then
@@ -2802,7 +2812,8 @@ JAIL_JSON_ARRAY=${JAIL_JSON_ARRAY%,}
 
 WHITELIST_COUNT=0
 if [[ -f "$SYSWARDEN_DIR/whitelist.txt" ]]; then
-    WHITELIST_COUNT=$(grep -cvE '^\s*(#|$)' "$SYSWARDEN_DIR/whitelist.txt")
+    # FIX: Adding '|| true' so grep exit code 1 (no match) doesn't kill the script
+    WHITELIST_COUNT=$(grep -cvE '^\s*(#|$)' "$SYSWARDEN_DIR/whitelist.txt" || true)
 fi
 
 cat <<JSON_EOF > "$TMP_FILE"
@@ -2828,7 +2839,10 @@ EOF
     fi
     
     # 4. First immediate run to generate data.json before the UI starts
-    "$BIN_PATH"
+    # FIX: Enclose the execution in an 'if' block to catch failures gracefully
+    if ! "$BIN_PATH"; then
+        log "WARN" "Initial telemetry run failed, but script will continue."
+    fi
 }
 
 # ==============================================================================
