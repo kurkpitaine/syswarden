@@ -189,6 +189,20 @@ define_ssh_port() {
 
     echo "SSH_PORT='$SSH_PORT'" >> "$CONF_FILE"
     log "INFO" "SSH Port configured as: $SSH_PORT"
+	
+	# --- ENABLE SSH TCP FORWARDING (REQUIRED FOR DASHBOARD TUNNELING) ---
+    if [[ -f /etc/ssh/sshd_config ]]; then
+        log "INFO" "Ensuring SSH TCP Forwarding is enabled for Dashboard UI..."
+        
+        # Uncomment the directive if it's commented out
+        sed -i 's/^#AllowTcpForwarding.*/AllowTcpForwarding yes/' /etc/ssh/sshd_config
+        # Force it to 'yes' if it was explicitly set to 'no'
+        sed -i 's/^[[:space:]]*AllowTcpForwarding[[:space:]]*no/AllowTcpForwarding yes/' /etc/ssh/sshd_config
+        
+        # Restart SSH service quietly to apply changes (will not drop existing connections)
+        rc-service sshd restart >/dev/null 2>&1 || true
+    fi
+    # --------------------------------------------------------------------
 }
 
 define_wireguard() {
@@ -932,6 +946,10 @@ mode = aggressive
 port = $SSH_PORT
 logpath = /var/log/messages
 backend = auto
+
+# --- ALPINE FIX: Disable redundant default jails ---
+[sshd-ddos]
+enabled = false
 EOF
 
         # 4. DYNAMIC DETECTION: NGINX
