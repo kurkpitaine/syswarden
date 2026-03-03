@@ -178,6 +178,9 @@ install_dependencies() {
     
     if command -v systemctl >/dev/null; then
         systemctl enable --now rsyslog 2>/dev/null || true
+        # FIX: Force log files creation immediately so dynamic detection never fails
+        touch /var/log/auth.log /var/log/kern.log /var/log/secure /var/log/messages 2>/dev/null || true
+        systemctl restart rsyslog 2>/dev/null || true
     fi
     # --------------------------------------------------------------------------
 	
