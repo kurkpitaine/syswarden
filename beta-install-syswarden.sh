@@ -827,19 +827,29 @@ EOF
 add chain inet syswarden_table input { type filter hook input priority filter - 10; policy accept; }
 EOF
 
-        # 2. Add Rules (Removed 'flags all' which causes crashes on older kernels)
+        # 2. Top Priority Rules (Connection Tracking)
         if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
             echo "add rule inet syswarden_table input ct state established,related accept" >> "$TMP_DIR/syswarden.nft"
         fi
-		
-		# --- FIX: RE-INJECT WHITELIST ACCEPT RULES (Top Priority) ---
+
+        # --- STRICT WIREGUARD SSH CLOAKING ---
+        if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
+            # Fix: Multiple iifname negations in a single rule cause Nftables parser to fail silently.
+            # We explicitly accept wg0/lo, and strictly drop all other SSH traffic.
+            # Placed BEFORE the Whitelist, ensuring even whitelisted admins must use the VPN for SSH.
+            echo "add rule inet syswarden_table input iifname { \"wg0\", \"lo\" } tcp dport ${SSH_PORT:-22} accept" >> "$TMP_DIR/syswarden.nft"
+            echo "add rule inet syswarden_table input tcp dport ${SSH_PORT:-22} log prefix \"[SysWarden-SSH-DROP] \" drop" >> "$TMP_DIR/syswarden.nft"
+        fi
+        # -------------------------------------
+
+        # --- FIX: RE-INJECT WHITELIST ACCEPT RULES ---
         if [[ -s "$WHITELIST_FILE" ]]; then
             while IFS= read -r wl_ip; do
                 [[ -z "$wl_ip" ]] && continue
                 echo "add rule inet syswarden_table input ip saddr $wl_ip accept" >> "$TMP_DIR/syswarden.nft"
             done < "$WHITELIST_FILE"
         fi
-        # ------------------------------------------------------------
+        # ---------------------------------------------
 
         if [[ "${GEOBLOCK_COUNTRIES:-none}" != "none" ]] && [[ -s "$GEOIP_FILE" ]]; then
             echo "add rule inet syswarden_table input ip saddr @$GEOIP_SET_NAME log prefix \"[SysWarden-GEO] \" drop" >> "$TMP_DIR/syswarden.nft"
@@ -853,10 +863,6 @@ EOF
 add rule inet syswarden_table input ip saddr @$SET_NAME log prefix "[SysWarden-BLOCK] " drop
 add rule inet syswarden_table input tcp dport { 23, 445, 1433, 3389, 5900 } log prefix "[SysWarden-BLOCK] " drop
 EOF
-
-        if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
-            echo "add rule inet syswarden_table input iifname != \"wg0\" iifname != \"lo\" tcp dport ${SSH_PORT:-22} log prefix \"[SysWarden-SSH-DROP] \" drop" >> "$TMP_DIR/syswarden.nft"
-        fi
 
         # Apply Base Structure First
         nft -f "$TMP_DIR/syswarden.nft"
@@ -1039,19 +1045,6 @@ EOF
             echo "-A ufw-before-input -m set --match-set $SET_NAME src -j DROP" >> "$UFW_RULES"
         fi
 
-        # --- WIREGUARD SSH CLOAKING ---
-        if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
-            # 1. Allow UDP port for WireGuard Tunnel
-            ufw allow "${WG_PORT:-51820}/udp" >/dev/null 2>&1 || true
-            
-            # 2. Allow SSH strictly from the WG Subnet
-            ufw allow from "${WG_SUBNET}" to any port "${SSH_PORT:-22}" proto tcp >/dev/null 2>&1 || true
-            
-            # 3. Deny public SSH access
-            ufw deny "${SSH_PORT:-22}/tcp" >/dev/null 2>&1 || true
-        fi
-        # ------------------------------
-
         # --- GEOIP INJECTION ---
         if [[ "${GEOBLOCK_COUNTRIES:-none}" != "none" ]] && [[ -s "$GEOIP_FILE" ]]; then
             log "INFO" "Configuring UFW GeoIP Set..."
@@ -1085,6 +1078,7 @@ EOF
         fi
 		
 		# --- FIX: RE-INJECT WHITELIST ACCEPT RULES ---
+        # Inserted FIRST so they can be safely overridden by stricter SSH rules below
         if [[ -s "$WHITELIST_FILE" ]]; then
             while IFS= read -r wl_ip; do
                 [[ -z "$wl_ip" ]] && continue
@@ -1092,6 +1086,20 @@ EOF
             done < "$WHITELIST_FILE"
         fi
         # ---------------------------------------------
+
+        # --- STRICT WIREGUARD SSH CLOAKING ---
+        # Inserted AFTER Whitelist using 'insert 1' to guarantee absolute top priority
+        if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
+            # Priority 3: Deny public SSH access
+            ufw insert 1 deny "${SSH_PORT:-22}/tcp" >/dev/null 2>&1 || true
+            
+            # Priority 2: Allow SSH strictly from the WG Subnet
+            ufw insert 1 allow from "${WG_SUBNET}" to any port "${SSH_PORT:-22}" proto tcp >/dev/null 2>&1 || true
+            
+            # Priority 1: Allow UDP port for WireGuard Tunnel to establish connection
+            ufw insert 1 allow "${WG_PORT:-51820}/udp" >/dev/null 2>&1 || true
+        fi
+        # -------------------------------------
 
         ufw reload
         log "INFO" "UFW rules applied."
@@ -1145,22 +1153,8 @@ EOF
             fi
         fi
 		
-		# --- WIREGUARD SSH CLOAKING ---
-        if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
-            # Clean existing WG rules first to prevent duplicates
-            while iptables -D INPUT -p tcp --dport "${SSH_PORT:-22}" -j DROP 2>/dev/null; do :; done
-            while iptables -D INPUT -i wg0 -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT 2>/dev/null; do :; done
-            while iptables -D INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null; do :; done
-            
-            # Insert top-priority rules (inserted in reverse order, position 1)
-            iptables -I INPUT 1 -p tcp --dport "${SSH_PORT:-22}" -j DROP
-            iptables -I INPUT 1 -i wg0 -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT
-            iptables -I INPUT 1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-        fi
-        # ------------------------------
-
-        # --- FIX: RE-INJECT WHITELIST ACCEPT RULES ---
-        # Ensures whitelisted IPs bypass all subsequent drops and are re-applied on update
+		# --- FIX: RE-INJECT WHITELIST ACCEPT RULES ---
+        # Inserted BEFORE WireGuard Cloaking so that WG rules push this down and stay on top.
         if [[ -s "$WHITELIST_FILE" ]]; then
             while IFS= read -r wl_ip; do
                 [[ -z "$wl_ip" ]] && continue
@@ -1170,6 +1164,23 @@ EOF
             done < "$WHITELIST_FILE"
         fi
         # ---------------------------------------------
+
+        # --- STRICT WIREGUARD SSH CLOAKING ---
+        if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
+            # Clean existing WG rules first to prevent duplicates
+            while iptables -D INPUT -p tcp --dport "${SSH_PORT:-22}" -j DROP 2>/dev/null; do :; done
+            while iptables -D INPUT -i wg0 -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT 2>/dev/null; do :; done
+            while iptables -D INPUT -i lo -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT 2>/dev/null; do :; done
+            while iptables -D INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null; do :; done
+            
+            # Insert top-priority rules (inserted in reverse order, so ESTABLISHED stays at absolute position 1)
+            # This explicitly overwrites the Whitelist for SSH traffic.
+            iptables -I INPUT 1 -p tcp --dport "${SSH_PORT:-22}" -j DROP
+            iptables -I INPUT 1 -i wg0 -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT
+            iptables -I INPUT 1 -i lo -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT
+            iptables -I INPUT 1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+        fi
+        # -------------------------------------
         
         # Save IPtables persistence for legacy OS
         if command -v netfilter-persistent >/dev/null; then netfilter-persistent save; 
