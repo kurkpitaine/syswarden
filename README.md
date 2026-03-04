@@ -76,7 +76,8 @@ SysWarden (Technology Stack)
 │   └── WireGuard VPN              # Stealth Management Interface & Dynamic Clients
 │
 ├── Active Defense & Daemons
-│   ├── Python 3                   # Asynchronous Log Parsing & API Reporting Daemon
+│   ├── Python 3 (Daemon)          # Asynchronous AbuseIPDB API Reporting
+│   ├── Python 3 (HTTP Server)     # Serverless Telemetry Dashboard UI
 │   ├── Fail2ban                   # Dynamic Intrusion Prevention System (Custom Jails)
 │   ├── Systemd / OpenRC           # OS-Specific Service & Persistence Management
 │   └── Logrotate                  # Log Maintenance & Space Optimization
@@ -91,37 +92,24 @@ SysWarden (Technology Stack)
 
 ## Key Features
 
-- **Universal OS Support:** Auto-detects and seamlessly adapts to **Debian, Ubuntu, CentOS Stream, Fedora, AlmaLinux, Rocky Linux**, and now features a dedicated deployment pipeline for **Alpine Linux** (OpenRC).
-
-- **Intelligent Backend Detection & Routing:** Automatically selects and configures the optimal firewall technology present on your system:
-  - **Nftables (Modern Standard):** Utilizes a groundbreaking "Flat Syntax" and sequential chunking mechanism to bypass legacy AST parser limitations (segfaults) and inject massive IP sets with near-zero RAM footprint.
-  - **Firewalld:** Dynamic, native zone management tailored for the RHEL/Fedora ecosystem.
-  - **IPSet/Iptables:** High-performance hashing fallback for legacy distributions or minimal containerized environments.
-
-- **Multi-Layer Threat Filtering:**
-  - **Data-Shield Blocklist:** Drops over 100,000+ known malicious IPs instantly.
-  - **Geo-Blocking & ASN Filtering:** Dynamically restricts traffic from high-risk countries (via IPDeny) and rogue ASNs (Spamhaus/RADB).
-  - **Hermetic Docker Isolation:** Automatically secures exposed containers by injecting specialized rules into the `DOCKER-USER` chain without breaking internal bridge networking.
-
-- **Stealth Management VPN:** Deploys a native **WireGuard** interface to hide your management ports (SSH, Admin Panels) from the public internet. Includes a built-in CLI orchestrator to instantly generate client profiles and QR codes with optimized MTU parameters for flawless connectivity.
-
-- **Smart Mirror Selection:** Bypasses legacy ICMP Ping limitations by utilizing strict **TCP/HTTP latency checks**. This ensures you always fetch threat intelligence from the fastest available GitHub/GitLab mirror, even behind strict corporate firewalls.
-
-- **Kernel-Safe Optimization:** Engineered to prevent kernel memory leaks and stack overflows on older distributions (e.g., Debian 11 / Kernel 5.10). Employs highly conservative memory hashing on RHEL kernels to prevent "Invalid Argument" crashes, while maximizing buffer efficiency.
-
-- **Persistence Guaranteed:** Rules are strictly written to disk according to OS-specific standards (`/etc/nftables.conf` for Systemd, `/etc/nftables.nft` for Alpine/OpenRC, XML for Firewalld) guaranteeing absolute survival across hard reboots.
-
-- **Autonomous Operations:** Deploys a lightweight cron job to refresh threat intelligence hourly, paired with an asynchronous Python daemon that automatically reports active attackers back to the AbuseIPDB community.
+- **Strict SSH Cloaking (Zero Trust):** Enforces a mathematically absolute policy for SSH. Access is exclusively restricted to the WireGuard VPN (wg0) and Loopback (lo) interfaces. An immediate, top-priority kernel DROP rule explicitly prevents any public access, ensuring that even locally whitelisted IPs cannot bypass the VPN requirement for SSH.
+- **Serverless Telemetry Dashboard:** A lightweight, real-time Web UI served via a native Python HTTP daemon. It provides live Layer 3 (Kernel) and Layer 7 (Fail2ban) blocking statistics, active jail triggers, and real-time IP registries without requiring heavy web servers like Nginx or Apache.
+- **Firewall State Machine:** CLI commands (whitelist, blocklist) operate on a strict "Single Source of Truth" model. They securely write to local persistence files, universally purge memory conflicts, and trigger the orchestrator to completely rebuild the firewall safely, preserving the strict rule hierarchy across all OS backends.
+- **Universal OS Support:** Auto-detects and seamlessly adapts to Debian, Ubuntu, CentOS Stream, Fedora, AlmaLinux, Rocky Linux, and Alpine Linux (OpenRC).
+- **Intelligent Backend Detection & Routing:** Automatically selects and configures the optimal firewall technology present on your system (Nftables Flat Syntax, Firewalld Rich Rules, or IPSet/Iptables).
+- **Multi-Layer Threat Filtering:** Instantly drops over 100,000+ known malicious IPs, restricts traffic from high-risk countries via GeoIP, and blocks rogue ASNs via Spamhaus/RADB.
+- **Hermetic Docker Isolation:** Automatically secures exposed containers by injecting specialized rules into the DOCKER-USER chain without breaking internal bridge networking.
+- **Stealth Management VPN:** Deploys a native WireGuard interface to hide your management ports from the public internet, including a built-in CLI orchestrator to instantly generate client profiles and QR codes.
 
 ## Objectives
 
 - **Noise Reduction & Log Clarity:** Drastically reduce log fatigue and SIEM ingestion costs (`/var/log/auth.log`, `journalctl`) by instantly dropping automated scanners, brute-forcers, and botnets at the network edge.
-- **Resource & Compute Optimization:** Conserve critical CPU cycles, RAM, and bandwidth by dropping illegitimate packets natively in Kernel-Space (via Nftables/IPSet) rather than allowing user-space applications (like Nginx, Apache, or SSHD) to process them.
-- **Proactive Community Security:** Shift your infrastructure from a vulnerable "Reactive" stance (waiting for localized failed logins before triggering a ban) to a fortified "Proactive" stance. By leveraging global threat intelligence, SysWarden preemptively blocks IPs that have attacked other community servers minutes ago, neutralizing threats before they even discover your IP address.
+- **Resource & Compute Optimization:** Conserve critical CPU cycles, RAM, and bandwidth by dropping illegitimate packets natively in Kernel-Space rather than allowing user-space applications to process them.
+- **Proactive Community Security:** Shift your infrastructure from a vulnerable "Reactive" stance to a fortified "Proactive" stance, preemptively blocking IPs that have attacked other community servers minutes ago.
 
 ## Technical Deep Dive: Architectural Layering
 
-> A common concern among infrastructure engineers is that deploying massive static blocklists might conflict or create race conditions with dynamic Intrusion Prevention Systems (IPS) like Fail2ban. **SysWarden elegantly resolves this through strict, sequential network layering.**
+> A common concern among infrastructure engineers is that deploying massive static blocklists might conflict or create race conditions with dynamic Intrusion Prevention Systems (IPS) like Fail2ban. SysWarden elegantly resolves this through strict, sequential network layering.
 
 ## Traffic Workflow
 
@@ -157,15 +145,15 @@ SysWarden (Technology Stack)
 
 - **Layer 1 (Preemptive Defense):** SysWarden leverages a modern Nftables "Flat Syntax" architecture and intelligent chunking to inject massive, high-performance sets (100k+ IPs, GeoIP, ASN). This acts as an impenetrable static shield, dropping known threat actors at the Kernel level with a near-zero memory footprint.
 - **Layer 2 (Dynamic Analysis):** Fail2ban serves as the secondary behavioral net, monitoring application logs for localized, zero-day brute-force attempts.
-- **The Result:** Fail2ban's CPU and RAM consumption drops to virtually zero. By letting the Nftables engine filter out the internet's "background noise" (99% of automated scans), Fail2ban only processes logs for traffic that has already passed the strict global blocklist.
+- **The Result:** Fail2ban's CPU and RAM consumption drops to virtually zero. By letting the Nftables engine filter out the internet's "background noise", Fail2ban only processes logs for traffic that has already passed the strict global blocklist.
 
 ### 2. The Firewalld Orchestration (RHEL, AlmaLinux, Rocky Linux)
 
-On Enterprise Linux distributions, adhering to native `firewalld` architecture is critical for system stability and compliance.
+On Enterprise Linux distributions, adhering to native firewalld architecture is critical for system stability and compliance.
 
-- **Native IPSet Integration:** SysWarden programmatically defines massive, permanent `ipset` types deeply embedded within Firewalld's native XML configuration framework.
-- **Rich Rule Processing:** It deploys high-priority "Rich Rules" that intercept and drop malicious traffic globally, long before packets can be routed to user-defined zones or exposed services.
-- **Absolute Persistence:** Unlike legacy scripts that execute ephemeral `ipset` commands (which vanish upon a service reload), SysWarden strictly commits all configurations directly to `/etc/firewalld/`, ensuring absolute persistence across daemon reloads and hard reboots.
+- **Native IPSet Integration:** SysWarden programmatically defines massive, permanent ipset types deeply embedded within Firewalld's native XML configuration framework.
+- **Rich Rule Processing:** It deploys high-priority "Rich Rules" that intercept and drop malicious traffic globally.
+- **Absolute Persistence:** SysWarden strictly commits all configurations directly to `/etc/firewalld/`, ensuring absolute persistence across daemon reloads and hard reboots.
 
 ### 3. Community Threat Intelligence: AbuseIPDB Reporting
 
@@ -184,7 +172,7 @@ On Enterprise Linux distributions, adhering to native `firewalld` architecture i
 
 ## Installation & Usage (Root Privileges Required)
 
-> **Zero-Touch Autodiscovery:** SysWarden features an intelligent detection engine that automatically scans your environment for active services (Nginx, Apache, SSH, MongoDB) and configures the appropriate Fail2ban jails and firewall ports seamlessly. If you install a new service *after* deploying SysWarden, simply run the `update` command to dynamically generate and apply the new security layers.
+> **Zero-Touch Autodiscovery:** SysWarden features an intelligent detection engine that automatically scans your environment for active services (Nginx, Apache, SSH, MongoDB) and configures the appropriate Fail2ban jails and firewall ports seamlessly.
 
 ### 1. System Preparation
 
@@ -198,8 +186,7 @@ apt update && apt install wget -y
 dnf update && dnf install wget -y
 
 # For Alpine Linux
-apk update && apk add wget
-apk add --no-cache bash
+apk update && apk add wget bash
 ```
 
 ### 2. Download & Execution
@@ -224,7 +211,123 @@ chmod +x install-syswarden-alpine.sh
 ./install-syswarden-alpine.sh
 ```
 
-### 3. CLI Orchestration Commands
+### 3. Unattended Installation (CI/CD / Ansible)
+
+You can bypass all interactive prompts by providing a configuration file.
+
+Create and edit a file named `syswarden-auto.conf` using your preferred text editor (e.g., `nano` or `vim`):
+
+```bash
+nano /usr/local/bin/syswarden-auto.conf
+```
+
+Paste the following configuration into the file (exemple:)
+
+```
+# ==============================================================================
+# Version=9.30
+# SYSWARDEN UNATTENDED INSTALLATION CONFIGURATION
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see [https://www.gnu.org/licenses/](https://www.gnu.org/licenses/).
+#
+# Usage: ./install-syswarden.sh syswarden-auto.conf
+# ==============================================================================
+
+# --- Enterprise Compliance Mode ---
+# y = Strictly disables third-party telemetry/reporting (e.g., AbuseIPDB) to comply with corporate policies.
+SYSWARDEN_ENTERPRISE_MODE="n"
+
+# --- SSH Configuration ---
+# Leave empty to auto-detect current active port
+SYSWARDEN_SSH_PORT=""
+
+# --- WireGuard Management VPN ---
+# y = Enable, n = Disable
+SYSWARDEN_ENABLE_WG="n"
+SYSWARDEN_WG_PORT="51820"
+SYSWARDEN_WG_SUBNET="10.66.66.0/24"
+
+# --- Docker Integration ---
+# y = Enable, n = Disable
+SYSWARDEN_USE_DOCKER="n"
+
+# --- Blocklist Selection ---
+# 1 = Standard, 2 = Critical, 3 = Custom, 4 = None
+SYSWARDEN_LIST_CHOICE="1"
+# If choice is 3, provide the URL below
+SYSWARDEN_CUSTOM_URL=""
+
+# --- Geo-Blocking ---
+# y = Enable, n = Disable
+SYSWARDEN_ENABLE_GEO="n"
+# Space-separated country codes (e.g., "ru cn kp ir")
+SYSWARDEN_GEO_CODES="ru cn kp ir"
+
+# --- ASN Blocking ---
+# Enable the ASN blocking module
+SYSWARDEN_ENABLE_ASN="y"
+
+# Master List (VPNs, Proxies, Linode, Tor Exit Nodes/Bulletproof Hosters)
+SYSWARDEN_ASN_LIST="AS60068 AS30823 AS210644 AS200593 AS202425 AS215540 AS53667 AS9009 AS20473 AS60068 AS212238 AS16276 AS62282 AS14061 AS24940 AS398324 AS31173 AS11878 AS32097 AS43948 AS63949 AS62240 AS16265 AS3223 AS53667 AS200651 AS58224 AS57821 AS199524 AS51852 AS197540"
+
+# Include Spamhaus ASN-DROP list for known cybercriminal infrastructures
+SYSWARDEN_USE_SPAMHAUS="y"
+
+# --- AbuseIPDB Reporting ---
+# y = Enable, n = Disable
+SYSWARDEN_ENABLE_ABUSE="n"
+SYSWARDEN_ABUSE_API_KEY=""
+SYSWARDEN_REPORT_F2B="y"
+SYSWARDEN_REPORT_FW="y"
+
+# --- Wazuh Agent ---
+# y = Enable, n = Disable
+SYSWARDEN_ENABLE_WAZUH="n"
+SYSWARDEN_WAZUH_IP=""
+SYSWARDEN_WAZUH_NAME=""
+SYSWARDEN_WAZUH_GROUP="default"
+SYSWARDEN_WAZUH_COMM_PORT="1514"
+SYSWARDEN_WAZUH_ENROLL_PORT="1515"
+```
+
+Pass the file as an argument (use the alpine script if applicable):
+
+```bash
+./install-syswarden.sh syswarden-auto.conf
+
+or
+
+./install-syswarden-alpine.sh syswarden-auto.conf
+```
+
+### 4. Serverless Telemetry Dashboard Access
+
+SysWarden v9.30 includes a fully decoupled, real-time Telemetry Dashboard. For maximum security, the dashboard relies on a Python HTTP daemon that explicitly avoids listening on public network interfaces. Access depends on your WireGuard configuration:
+
+**Scenario A: WireGuard VPN Enabled (Recommended)**
+If you chose to deploy the stealth management VPN during installation, the dashboard securely binds to the internal VPN subnet gateway.
+
+1. Connect to the server using your generated WireGuard client profile.
+2. Open your local browser and navigate to: `http://10.66.66.1:9999` (Replace `10.66.66.1` with your defined `WG_SUBNET` gateway).
+
+**Scenario B: WireGuard VPN Disabled**
+If you opted out of the VPN, the dashboard strictly binds to `127.0.0.1` (localhost) to prevent public exposure. You must use an SSH tunnel to access it.
+
+```bash
+ssh -L 9999:127.0.0.1:9999 your_user@your_server_ip -p YOUR_SSH_PORT
+```
+
+### 5. CLI Orchestration Commands
 
 Once installed, SysWarden acts as a standalone CLI tool. You can manage your infrastructure security on the fly without ever editing configuration files manually.
 
@@ -294,36 +397,38 @@ Once installed, SysWarden acts as a standalone CLI tool. You can manage your inf
 │   ├── syswarden.conf                      # Centralized Configuration & Environment Variables
 │   ├── syswarden/                          # Local Threat Intelligence Directory
 │   │   ├── whitelist.txt                   # Custom IP/CIDR Routing Exceptions
-│   │   ├── blacklist.txt                   # Custom Permanent IP Bans
+│   │   ├── blocklist.txt                   # Custom Permanent IP Bans
 │   │   ├── geoip.txt                       # Dynamic IPDeny Country-Level Blocklists
-│   │   └── asn.txt                         # Dynamic Spamhaus/RADB ASN Blocklists
+│   │   ├── asn.txt                         # Dynamic Spamhaus/RADB ASN Blocklists
+│   │   └── ui/                             # Serverless Dashboard Web Root (HTML & JSON)
 │   ├── wireguard/                          # Stealth Management VPN Configurations
 │   │   ├── wg0.conf                        # Core Server Interface Configuration
 │   │   └── clients/                        # Generated Client Profiles & MTU Settings
 │   ├── fail2ban/
 │   │   └── jail.local                      # Custom Jails (SSH, Web, DB) Injected by SysWarden
 │   ├── logrotate.d/
-│   │   └── syswarden                       # Log Rotation Policy (7-day retention & compression)
+│   │   └── syswarden                       # Log Rotation Policy
 │   ├── cron.d/                             # (Mapped to /etc/crontabs/root on Alpine)
 │   │   └── syswarden-update                # Hourly Threat Intelligence Sync Job
 │   ├── systemd/system/                     # (For Debian/Ubuntu/RHEL Ecosystem)
-│   │   └── syswarden-reporter.service      # AbuseIPDB Asynchronous Daemon Service
+│   │   ├── syswarden-reporter.service      # AbuseIPDB Asynchronous Daemon Service
+│   │   └── syswarden-ui.service            # Serverless Telemetry Dashboard Service
 │   └── init.d/                             # (For Alpine Linux / OpenRC Ecosystem)
-│       └── syswarden-reporter              # OpenRC Daemon Service Definition
+│       ├── syswarden-reporter              # OpenRC AbuseIPDB Service
+│       └── syswarden-ui                    # OpenRC Dashboard Service
 │
 ├── usr/local/bin/
 │   ├── install-syswarden.sh                # Main CLI Orchestrator (Universal OS)
 │   ├── install-syswarden-alpine.sh         # Main CLI Orchestrator (Alpine Linux)
-│   ├── syswarden-auto.conf                 # Auto-configuration file
+│   ├── syswarden-telemetry.sh              # Decoupled JSON Generator (Cron)
 │   └── syswarden_reporter.py               # Python Log Analyzer & API Outbound Client
 │
 └── var/
     ├── log/
-    │   ├── syswarden-install.log           # Verbose Installation, Deployment & Debug Telemetry
-    │   ├── syswarden_reporter.log          # AbuseIPDB API Transaction Logs
-    │   └── fail2ban.log                    # Dynamic Intrusion Prevention Daemon Logs
+    │   ├── syswarden-install.log           # Verbose Installation & Debug Telemetry
+    │   └── fail2ban.log                    # Dynamic Intrusion Prevention Logs
     └── ossec/etc/
-        └── ossec.conf                      # Wazuh Agent Config (Manager IP & FIM Injected Here)
+        └── ossec.conf                      # Wazuh Agent Config
 ```
 
 ## Uninstallation & System Teardown (Root Privileges Required)
