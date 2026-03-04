@@ -980,7 +980,10 @@ EOF
         if [[ -s "$WHITELIST_FILE" ]]; then
             while IFS= read -r wl_ip; do
                 [[ -z "$wl_ip" ]] && continue
-                firewall-cmd --permanent --add-rich-rule="rule family='ipv4' source address='$wl_ip' accept" >/dev/null 2>&1 || true
+                # 1. Clean up the old unprioritized rule if it exists
+                firewall-cmd --permanent --remove-rich-rule="rule family='ipv4' source address='$wl_ip' accept" >/dev/null 2>&1 || true
+                # 2. Inject the new rule with absolute priority (-100)
+                firewall-cmd --permanent --add-rich-rule="rule priority='-100' family='ipv4' source address='$wl_ip' accept" >/dev/null 2>&1 || true
             done < "$WHITELIST_FILE"
         fi
         # ---------------------------------------------
