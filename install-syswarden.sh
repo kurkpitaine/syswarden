@@ -4388,6 +4388,14 @@ download_geoip
 download_asn
 # --------------------------------------
 
+# --- FIX 3: THE POST-DOWNLOAD RELOAD ---
+# Now that massive lists are downloaded to disk, we must reload the firewall to inject them
+if [[ "$MODE" != "update" ]]; then
+    log "INFO" "Applying massive downloaded lists to active firewall..."
+    apply_firewall_rules
+fi
+# --------------------------------------
+
 detect_protected_services
 
 if command -v systemctl >/dev/null && systemctl is-active --quiet syswarden-reporter; then
