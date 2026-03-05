@@ -1332,7 +1332,7 @@ banaction = $f2b_action
 [sshd]
 enabled = true
 mode = aggressive
-port = $SSH_PORT
+port = ${SSH_PORT:-22}
 logpath = %(sshd_log)s
 backend = systemd
 EOF
