@@ -197,7 +197,7 @@ For Universal OS (Debian / Ubuntu / RHEL ecosystem):
 
 ```bash
 cd /usr/local/bin/
-wget https://github.com/duggytuxy/syswarden/releases/download/v9.30/install-syswarden.sh
+wget https://github.com/duggytuxy/syswarden/releases/download/v9.40/install-syswarden.sh
 chmod +x install-syswarden.sh
 ./install-syswarden.sh
 ```
@@ -206,7 +206,7 @@ For Alpine Linux (OpenRC):
 
 ```bash
 cd /usr/local/bin/
-wget https://github.com/duggytuxy/syswarden/releases/download/v9.30/install-syswarden-alpine.sh
+wget https://github.com/duggytuxy/syswarden/releases/download/v9.40/install-syswarden-alpine.sh
 chmod +x install-syswarden-alpine.sh
 ./install-syswarden-alpine.sh
 ```
@@ -372,6 +372,14 @@ Once installed, SysWarden acts as a standalone CLI tool. You can manage your inf
 ```
 
 > Instantly generates a new WireGuard client profile (with optimized MTU) and displays the configuration QR code in the terminal.
+
+- Add Fail2ban jails after new services installed:
+
+```bash
+./install-syswarden.sh fail2ban-jails
+```
+
+> Dynamically discover active services and reload Fail2ban jails without disruption.
 
 - Inject Docker Shield:
 
