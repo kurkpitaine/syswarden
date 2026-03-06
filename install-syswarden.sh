@@ -32,7 +32,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v9.41"
+VERSION="v9.50"
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
 BLOCKLIST_FILE="$SYSWARDEN_DIR/blocklist.txt"
@@ -2564,6 +2564,145 @@ maxretry = 1
 bantime  = 48h
 EOF
         fi
+		
+		# 42. DYNAMIC DETECTION: VAULTWARDEN (BITWARDEN COMPATIBLE PASSWORD MANAGER)
+		VW_LOG=""
+		# Search for standard Vaultwarden log paths (Native or Docker mounted)
+		for path in "/var/log/vaultwarden/vaultwarden.log" "/vw-data/vaultwarden.log" "/opt/vaultwarden/vaultwarden.log"; do
+			if [[ -f "$path" ]]; then VW_LOG="$path"; break; fi
+		done
+
+		if [[ -n "$VW_LOG" ]]; then
+			log "INFO" "Vaultwarden logs detected. Enabling Vaultwarden Guard."
+
+			# Create Filter for Vaultwarden Master Password brute-forcing
+			# Note: Vaultwarden MUST be configured with LOG_IP_ADDRESSES=true or EXTENDED_LOGGING=true
+			# Catches standard Rust backend identity warnings
+			if [[ ! -f "/etc/fail2ban/filter.d/syswarden-vaultwarden.conf" ]]; then
+				cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-vaultwarden.conf
+[Definition]
+failregex = ^.*\[vaultwarden::api::identity\]\[(?:WARN|ERROR)\].*Invalid password.*from <HOST>.*\s*$
+            ^.*\[vaultwarden::api::identity\]\[(?:WARN|ERROR)\].*Client IP: <HOST>.*\s*$
+            ^.*\[(?:ERROR|WARN)\].*Failed login attempt.*from <HOST>.*\s*$
+ignoreregex = 
+EOF
+			fi
+
+			cat <<EOF >> /etc/fail2ban/jail.local
+
+# --- Vaultwarden / Bitwarden Password Manager Protection ---
+[syswarden-vaultwarden]
+enabled  = true
+port     = http,https,80,443,8080
+filter   = syswarden-vaultwarden
+logpath  = $VW_LOG
+backend  = auto
+# Zero-Tolerance for the password vault: 3 failed attempts = 24h ban
+maxretry = 3
+bantime  = 24h
+EOF
+		fi
+
+		# 43. DYNAMIC DETECTION: IAM & SSO (AUTHELIA / AUTHENTIK)
+		SSO_LOG=""
+		# Check standard output logs for major open-source SSO providers
+		for path in "/var/log/authelia/authelia.log" "/var/log/authentik/authentik.log" "/opt/authelia/authelia.log" "/opt/authentik/authentik.log"; do
+			if [[ -f "$path" ]]; then SSO_LOG="$path"; break; fi
+		done
+
+		if [[ -n "$SSO_LOG" ]]; then
+			log "INFO" "SSO (Authelia/Authentik) logs detected. Enabling IAM Guard."
+
+			# Create Filter for Identity and Access Management credential stuffing
+			# Supports both Authelia (logfmt/JSON) and Authentik (JSON) log formats
+			if [[ ! -f "/etc/fail2ban/filter.d/syswarden-sso.conf" ]]; then
+				cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-sso.conf
+[Definition]
+failregex = ^.*(?:level=error|level=\"error\").*msg=\"Authentication failed\".*remote_ip=\"<HOST>\".*$
+            ^.*(?:\"event\":\"Failed login\"|event=\'Failed login\').*(?:\"client_ip\":\"<HOST>\"|\"remote_ip\":\"<HOST>\").*$
+ignoreregex = 
+EOF
+			fi
+
+			cat <<EOF >> /etc/fail2ban/jail.local
+
+# --- Authelia / Authentik SSO Protection ---
+[syswarden-sso]
+enabled  = true
+port     = http,https
+filter   = syswarden-sso
+logpath  = $SSO_LOG
+backend  = auto
+# Strict policy to prevent SSO compromise
+maxretry = 3
+bantime  = 24h
+EOF
+		fi
+
+		# 44. DYNAMIC DETECTION: BEHAVIORAL SILENT SCANNERS (DIRBUSTER/GOBUSTER)
+		if [[ -n "$RCE_LOGS" ]]; then
+			log "INFO" "Web access logs detected. Enabling Behavioral Scanner Guard."
+
+			# Create Filter for high-frequency 400/401/403/404/405/444 errors
+			# Why? Attackers often spoof legitimate User-Agents (e.g., Chrome) to bypass the 'badbots' jail.
+			# This jail detects the BEHAVIOR of directory brute-forcing (blind guessing paths) rather than the signature.
+			if [[ ! -f "/etc/fail2ban/filter.d/syswarden-silent-scanner.conf" ]]; then
+				cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-silent-scanner.conf
+[Definition]
+failregex = ^<HOST> .* "(?:GET|POST|HEAD|PUT|DELETE|OPTIONS|PROPFIND) .*" (?:400|401|403|404|405|444) .*$
+ignoreregex = 
+EOF
+			fi
+
+			cat <<EOF >> /etc/fail2ban/jail.local
+
+# --- Behavioral Silent Scanner Protection (DirBuster/Gobuster) ---
+[syswarden-silent-scanner]
+enabled  = true
+port     = http,https
+filter   = syswarden-silent-scanner
+logpath  = $RCE_LOGS
+backend  = auto
+# Policy: 20 anomalous HTTP errors within 10 seconds triggers an immediate drop
+maxretry = 20
+findtime = 10
+bantime  = 48h
+EOF
+		fi
+		
+		# 45. DYNAMIC DETECTION: OPEN PROXY PROBING & EXOTIC HTTP METHOD ABUSE
+		if [[ -n "$RCE_LOGS" ]]; then
+			log "INFO" "Web access logs detected. Enabling Open Proxy & Exotic Method Guard."
+
+			# Create Filter for Open Proxy Probing and Tunneling attempts
+			# Attackers send absolute URIs (GET http://target.com) or use the CONNECT method
+			# to check if your web server can be abused as an anonymous forward proxy for botnets.
+			# Also catches TRACE/TRACK (Cross-Site Tracing) and WebDAV methods (PROPFIND, MKCOL) 
+			# often used by ransomware to discover or mount network drives.
+			# Note: We use \x253A for the URL-encoded colon ':' to ensure strict matching.
+			if [[ ! -f "/etc/fail2ban/filter.d/syswarden-proxy-abuse.conf" ]]; then
+				cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-proxy-abuse.conf
+[Definition]
+failregex = ^<HOST> .* "(?:CONNECT|TRACE|TRACK|PROPFIND|PROPPATCH|MKCOL|COPY|MOVE|LOCK|UNLOCK) .*" \d{3} .*$
+            ^<HOST> .* "(?:GET|POST|HEAD) (?:http|https)(?:\x253A|:)//.*" \d{3} .*$
+ignoreregex = 
+EOF
+			fi
+
+			cat <<EOF >> /etc/fail2ban/jail.local
+
+# --- Open Proxy Abuse & Malicious Tunneling Protection ---
+[syswarden-proxy-abuse]
+enabled  = true
+port     = http,https
+filter   = syswarden-proxy-abuse
+logpath  = $RCE_LOGS
+backend  = auto
+# Zero-Tolerance policy: 1 attempt to use the server as a proxy = 48 hours kernel ban
+maxretry = 1
+bantime  = 48h
+EOF
+		fi
 
         log "INFO" "Starting Fail2ban service..."
         if command -v systemctl >/dev/null; then
@@ -3603,7 +3742,7 @@ EOF
 # SYSWARDEN V9.40 - UI DASHBOARD GENERATION (EXPANDED REGISTRY)
 # ==============================================================================
 function generate_dashboard() {
-    log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.41)..."
+    log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.50)..."
     
     local UI_DIR="/etc/syswarden/ui"
     mkdir -p "$UI_DIR"
@@ -3666,7 +3805,7 @@ function generate_dashboard() {
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center gap-3">
                     <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.7)]" id="status-indicator"></div>
-                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v9.41</span></h1>
+                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v9.50</span></h1>
                 </div>
                 
                 <div class="flex items-center gap-2 bg-gray-100 dark:bg-dark-900 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
@@ -4402,7 +4541,7 @@ fi
 if [[ "$MODE" != "update" ]]; then
     clear
     echo -e "${GREEN}#############################################################"
-    echo -e "#     SysWarden Tool Installer (Universal v9.41)     #"
+    echo -e "#     SysWarden Tool Installer (Universal v9.50)     #"
     echo -e "#############################################################${NC}"
 fi
 
