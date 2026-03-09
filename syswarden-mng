@@ -2,7 +2,7 @@
 
 # SysWarden Management - Blocklists and Whitelists Manager
 # Copyright (C) 2026 duggytuxy - Laurent M.
-# Version: v9.60
+# Version: v9.61
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
@@ -34,7 +34,7 @@ SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
 BLOCKLIST_FILE="$SYSWARDEN_DIR/blocklist.txt"
 SET_NAME="syswarden_blacklist"
-VERSION="v9.60"
+VERSION="v9.61"
 
 # --- ROOT ENFORCEMENT ---
 if [[ $EUID -ne 0 ]]; then
@@ -58,12 +58,12 @@ detect_backend() {
     fi
 }
 
-# --- IP VALIDATION ---
-# Prevents catastrophic regex failures by enforcing strict IPv4 format
+# --- SECURITY FIX: STRICT SEMANTIC IP VALIDATION ---
+# Prevents catastrophic firewall crashes (Audit F13) by enforcing strict 0-255 octet ranges
 validate_ip() {
     local ip="$1"
-    if [[ ! "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-        echo -e "${RED}ERROR: Invalid IPv4 address format: '$ip'${NC}"
+    if ! echo "$ip" | awk -F'.' 'NF==4 && $1>=0 && $1<=255 && $2>=0 && $2<=255 && $3>=0 && $3<=255 && $4>=0 && $4<=255 {exit 0} {exit 1}'; then
+        echo -e "${RED}ERROR: Invalid or mathematically impossible IPv4 address: '$ip'${NC}"
         exit 1
     fi
 }
@@ -190,9 +190,10 @@ whitelist_ip() {
     # 1. Force Unban first (Cleanup)
     unblock_ip "$target_ip" >/dev/null 2>&1 || true
 
-    # 2. Add to Persistence
+    # 2. Add to Persistence (Securely)
     mkdir -p "$SYSWARDEN_DIR"
     touch "$WHITELIST_FILE"
+    chmod 600 "$WHITELIST_FILE" # SECURITY FIX: Prevent local enumeration (Audit R12)
     if ! grep -q "^${target_ip}$" "$WHITELIST_FILE" 2>/dev/null; then
         echo "$target_ip" >> "$WHITELIST_FILE"
         echo -e "${GREEN}[✔] Saved to persistent $WHITELIST_FILE${NC}"
@@ -246,9 +247,10 @@ block_ip() {
         exit 1
     fi
 
-    # 2. Add to Persistence
+    # 2. Add to Persistence (Securely)
     mkdir -p "$SYSWARDEN_DIR"
     touch "$BLOCKLIST_FILE"
+    chmod 600 "$BLOCKLIST_FILE" # SECURITY FIX: Prevent local enumeration (Audit R12)
     if ! grep -q "^${target_ip}$" "$BLOCKLIST_FILE" 2>/dev/null; then
         echo "$target_ip" >> "$BLOCKLIST_FILE"
         echo -e "${GREEN}[✔] Saved to persistent $BLOCKLIST_FILE${NC}"
@@ -295,7 +297,7 @@ list_ips() {
 # --- CLI ROUTER & HELP MENU ---
 show_help() {
     echo -e "${GREEN}======================================================${NC}"
-    echo -e "${YELLOW}  SysWarden Management CLI (v9.60) - Day 2 Operations ${NC}"
+    echo -e "${YELLOW}  SysWarden Management CLI (v9.61) - Day 2 Operations ${NC}"
     echo -e "${GREEN}======================================================${NC}"
     echo -e "Usage: syswarden-mng [COMMAND] [IP]"
     echo -e ""
