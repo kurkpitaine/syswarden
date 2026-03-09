@@ -33,7 +33,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v9.61"
+VERSION="v9.62"
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
 BLOCKLIST_FILE="$SYSWARDEN_DIR/blocklist.txt"
@@ -3383,11 +3383,12 @@ uninstall_syswarden() {
     rm -f /etc/systemd/system/syswarden-ipset.service /etc/syswarden/ipsets.save
     systemctl daemon-reload
 	
-	log "INFO" "Removing UI Dashboard Service..."
+	log "INFO" "Removing UI Dashboard Service & Audit Tools..."
     systemctl disable --now syswarden-ui 2>/dev/null || true
-    rm -f /etc/systemd/system/syswarden-ui.service /usr/local/bin/syswarden-telemetry.sh
+    rm -f /etc/systemd/system/syswarden-ui.service /usr/local/bin/syswarden-telemetry.sh /usr/local/bin/syswarden-ui-server.py
     systemctl daemon-reload
     rm -rf /etc/syswarden/ui
+    rm -f /var/log/syswarden-audit.log
 	
 	# --- WIREGUARD CLEANUP ---
     if [[ -d "/etc/wireguard" ]] || [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
@@ -3537,6 +3538,36 @@ uninstall_syswarden() {
             log "INFO" "Keeping Wazuh Agent installed."
         fi
     fi
+	
+	# --- 5.5 OS & SECURITY REVERT ---
+    log "INFO" "Reverting OS Hardening & Log Routing..."
+    
+    # Revert Rsyslog
+    if [[ -f /etc/rsyslog.conf ]]; then
+        sed -i '/kern-firewall\.log/d' /etc/rsyslog.conf
+        sed -i '/auth-syswarden\.log/d' /etc/rsyslog.conf
+        if command -v systemctl >/dev/null; then systemctl restart rsyslog 2>/dev/null || true
+        elif command -v rc-service >/dev/null; then rc-service rsyslog restart 2>/dev/null || true; fi
+    fi
+    
+    # Remove Immutable flags on user profiles
+    if command -v chattr >/dev/null; then
+        for user_dir in /home/*; do
+            if [[ -d "$user_dir" ]]; then
+                for profile_file in "$user_dir/.profile" "$user_dir/.bashrc" "$user_dir/.bash_profile"; do
+                    if [[ -f "$profile_file" ]]; then chattr -i "$profile_file" 2>/dev/null || true; fi
+                done
+            fi
+        done
+    fi
+    
+    # Revert SSH TCP Forwarding
+    if [[ -f /etc/ssh/sshd_config ]]; then
+        sed -i 's/^[[:space:]]*AllowTcpForwarding[[:space:]]*no/#AllowTcpForwarding yes/' /etc/ssh/sshd_config
+        if command -v systemctl >/dev/null; then systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+        elif command -v rc-service >/dev/null; then rc-service sshd restart 2>/dev/null || true; fi
+    fi
+    # --------------------------------
 
     # 6. Remove Config File
     rm -f "$CONF_FILE"
@@ -3843,7 +3874,7 @@ EOF
 # SYSWARDEN v9.40 - UI DASHBOARD GENERATION (EXPANDED REGISTRY)
 # ==============================================================================
 function generate_dashboard() {
-    log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.61)..."
+    log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.62)..."
     
     local UI_DIR="/etc/syswarden/ui"
     mkdir -p "$UI_DIR"
@@ -3906,7 +3937,7 @@ function generate_dashboard() {
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center gap-3">
                     <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.7)]" id="status-indicator"></div>
-                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v9.61</span></h1>
+                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v9.62</span></h1>
                 </div>
                 
                 <div class="flex items-center gap-2 bg-gray-100 dark:bg-dark-900 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
@@ -4731,7 +4762,7 @@ fi
 if [[ "$MODE" != "update" ]]; then
     clear
     echo -e "${GREEN}#############################################################"
-    echo -e "#     SysWarden Tool Installer (Universal v9.61)     #"
+    echo -e "#     SysWarden Tool Installer (Universal v9.62)     #"
     echo -e "#############################################################${NC}"
 fi
 

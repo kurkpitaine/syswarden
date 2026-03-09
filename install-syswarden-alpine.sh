@@ -42,7 +42,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v9.61"
+VERSION="v9.62"
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
 BLOCKLIST_FILE="$SYSWARDEN_DIR/blocklist.txt"
@@ -2902,11 +2902,12 @@ uninstall_syswarden() {
     rm -f /etc/init.d/syswarden-reporter /usr/local/bin/syswarden_reporter.py
     rm -rf /var/lib/syswarden
 	
-	log "INFO" "Removing UI Dashboard Service..."
+	log "INFO" "Removing UI Dashboard Service & Audit Tools..."
     rc-service syswarden-ui stop 2>/dev/null || true
     rc-update del syswarden-ui default 2>/dev/null || true
-    rm -f /etc/init.d/syswarden-ui /usr/local/bin/syswarden-telemetry.sh
+    rm -f /etc/init.d/syswarden-ui /usr/local/bin/syswarden-telemetry.sh /usr/local/bin/syswarden-ui-server.py
     rm -rf /etc/syswarden/ui
+    rm -f /var/log/syswarden-audit.log
 
     # 2. Remove Cron & Logrotate
     log "INFO" "Removing Maintenance Tasks..."
@@ -2977,6 +2978,33 @@ uninstall_syswarden() {
             log "INFO" "Keeping Wazuh Agent installed."
         fi
     fi
+	
+	# --- 5.5 OS & SECURITY REVERT ---
+    log "INFO" "Reverting OS Hardening & Log Routing..."
+    
+    # Revert Rsyslog (Alpine uses auth.log natively, so we only purge kern-firewall)
+    if [[ -f /etc/rsyslog.conf ]]; then
+        sed -i '/kern-firewall\.log/d' /etc/rsyslog.conf
+        rc-service rsyslog restart 2>/dev/null || true
+    fi
+    
+    # Remove Immutable flags on user profiles
+    if command -v chattr >/dev/null; then
+        for user_dir in /home/*; do
+            if [[ -d "$user_dir" ]]; then
+                for profile_file in "$user_dir/.profile" "$user_dir/.bashrc" "$user_dir/.bash_profile"; do
+                    if [[ -f "$profile_file" ]]; then chattr -i "$profile_file" 2>/dev/null || true; fi
+                done
+            fi
+        done
+    fi
+    
+    # Revert SSH TCP Forwarding
+    if [[ -f /etc/ssh/sshd_config ]]; then
+        sed -i 's/^[[:space:]]*AllowTcpForwarding[[:space:]]*no/#AllowTcpForwarding yes/' /etc/ssh/sshd_config
+        rc-service sshd restart 2>/dev/null || true
+    fi
+    # --------------------------------
 
     # 6. Remove Config Files & Logs
     rm -rf "$SYSWARDEN_DIR"
@@ -3200,7 +3228,7 @@ EOF
 # SYSWARDEN V9.40 - UI DASHBOARD GENERATION (EXPANDED REGISTRY)
 # ==============================================================================
 function generate_dashboard() {
-    log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.61)..."
+    log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.62)..."
     
     local UI_DIR="/etc/syswarden/ui"
     mkdir -p "$UI_DIR"
@@ -3263,7 +3291,7 @@ function generate_dashboard() {
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center gap-3">
                     <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.7)]" id="status-indicator"></div>
-                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v9.61</span></h1>
+                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v9.62</span></h1>
                 </div>
                 
                 <div class="flex items-center gap-2 bg-gray-100 dark:bg-dark-900 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
