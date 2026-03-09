@@ -400,6 +400,45 @@ Once installed, SysWarden acts as a standalone CLI tool. You can manage your inf
 
 > Fetches the latest SysWarden architecture from the repository and performs a seamless hot-reload without dropping active connections.
 
+### 6. Day-to-Day Operations (syswarden-mng)
+
+SysWarden includes a dedicated, secure Command Line Interface for daily firewall management. `syswarden-mng` allows administrators to hot-swap rules across all security layers (Persistence, Kernel Firewall, and Fail2ban) without requiring a full system reload.
+
+#### Management Commands
+
+```bash
+syswarden-mng [COMMAND] [IP]
+```
+
+- **`check <IP>`**: Performs a full XDR diagnostic of an IP across local storage, Layer 3 (Kernel Firewall), and Layer 7 (Fail2ban jails).
+- **`block <IP>`**: Instantly drops the IP at the kernel level and adds it to the persistent secure blocklist.
+- **`unblock <IP>`**: Surgically purges the IP from the persistence file, the active kernel set, and grants global Fail2ban amnesty.
+- **`whitelist <IP>`**: Grants absolute VIP access, bypassing all firewall restrictions dynamically.
+- **`list`**: Displays all manually whitelisted and blocked IP addresses.
+- **`reload`**: Safely triggers a full orchestrator synchronization.
+
+> **Security Hardening**: The CLI enforces strict semantic CIDR/IPv4 validation (awk-based) to prevent firewall crashes caused by malformed IP injections. It also automatically locks down custom list files with `0600` permissions to prevent local enumeration by unprivileged users.
+
+### 7. Continuous Compliance & Security Audit (syswarden-audit.sh)
+
+Deploying a secure framework requires continuous validation. SysWarden ships with a standalone Purple Team compliance script designed to verify that all DevSecOps security locks remain active and untampered post-installation.
+
+#### Running the Audit
+
+```bash
+./syswarden-audit.sh
+```
+
+#### Audit Scope
+
+- **OS Hardening & Privilege Separation**: Validates crontab lockdowns (`/etc/cron.allow`), ensures standard users are removed from privileged groups (`wheel`, `sudo`, `adm`), and checks for immutable flags (`+i`) on user profiles to prevent SSH backdoors.
+- **Log Routing & Anti-Injection**: Confirms the active status of Rsyslog and verifies the creation and strict permissions (`0600`) of isolated Netfilter and Auth logs.
+- **Kernel Shield & Threat Intel**: Validates the presence of the active global blocklist payload and verifies that SysWarden rules are correctly prioritized in the detected backend (Nftables, Firewalld, UFW, or Iptables).
+- **Zero Trust Fail2ban Engine**: Audits the Fail2ban IPC socket, checks for the absence of conflicting OS default configurations, verifies strict regex anchoring (`^%(__prefix_line)s`) to prevent log spoofing, and validates dynamic Infrastructure Whitelisting (Anti-Self-DoS).
+- **Telemetry Sandboxing**: Ensures the UI Python wrapper is deployed with strict HTTP security headers and that telemetry payload data (`data.json`) is strictly restricted to the `nobody` user.
+
+> **SIEM Integration**: Audit results are displayed in the console and simultaneously written to a secure, standardized log file at `/var/log/syswarden-audit.log` for easy ingestion by monitoring platforms.
+
 ## System Architecture & File Structure
 
 ```text
