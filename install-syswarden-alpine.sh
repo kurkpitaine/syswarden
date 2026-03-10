@@ -42,7 +42,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v9.72"
+VERSION="v9.73"
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
 BLOCKLIST_FILE="$SYSWARDEN_DIR/blocklist.txt"
@@ -3205,10 +3205,17 @@ if ! command -v jq >/dev/null; then apk add --no-cache jq >/dev/null 2>&1 || tru
 # --- System Metrics Gathering ---
 SYS_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 SYS_HOSTNAME=$(hostname)
-SYS_UPTIME=$(uptime -p | sed 's/up //')
-SYS_LOAD=$(cat /proc/loadavg | awk '{print $1", "$2", "$3}')
-SYS_RAM_USED=$(free -m | awk '/^Mem:/{print $3}')
-SYS_RAM_TOTAL=$(free -m | awk '/^Mem:/{print $2}')
+# --- FIX: KERNEL EXTRACTION & FAULT-TOLERANT VARIABLES ---
+# 'uptime -p' crashes on Alpine/BusyBox. We calculate uptime directly from the kernel.
+SYS_UPTIME=$(awk '{d=int($1/86400); h=int(($1%86400)/3600); m=int(($1%3600)/60); if(d>0) printf "%dd %dh %dm", d, h, m; else printf "%dh %dm", h, m}' /proc/uptime 2>/dev/null || echo "Unknown")
+SYS_LOAD=$(cat /proc/loadavg 2>/dev/null | awk '{print $1", "$2", "$3}' || echo "0, 0, 0")
+
+# Bulletproof RAM parsing: Prevents 'set -e' crashes if 'free' output changes format
+SYS_RAM_USED=$(free -m 2>/dev/null | awk '/^Mem:/{print $3}')
+SYS_RAM_USED=${SYS_RAM_USED:-0}
+SYS_RAM_TOTAL=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')
+SYS_RAM_TOTAL=${SYS_RAM_TOTAL:-0}
+# ---------------------------------------------------------
 
 # --- Layer 3 Metrics ---
 L3_GLOBAL=0; L3_GEOIP=0; L3_ASN=0
@@ -3289,7 +3296,8 @@ jq -n \
 
 # --- SECURITY FIX: STRICT JSON EXPOSURE CONTROL ---
 mv -f "$TMP_FILE" "$DATA_FILE"
-chown nobody:nobody "$DATA_FILE"
+# FIX: Cross-platform owner assignment to prevent 'set -e' crashes
+chown nobody:nobody "$DATA_FILE" 2>/dev/null || chown nobody "$DATA_FILE" 2>/dev/null || true
 chmod 600 "$DATA_FILE"
 EOF
 
@@ -3311,7 +3319,7 @@ EOF
 # SYSWARDEN V9.40 - UI DASHBOARD GENERATION (EXPANDED REGISTRY)
 # ==============================================================================
 function generate_dashboard() {
-    log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.72)..."
+    log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.73)..."
     
     local UI_DIR="/etc/syswarden/ui"
     mkdir -p "$UI_DIR"
@@ -3334,7 +3342,7 @@ function generate_dashboard() {
     <title>SysWarden | Fortress Dashboard</title>
     
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js" integrity="sha512-CQBWl4fJHWbryI+u8E42Zb80kG42nPTK897HkXKaQWw8jZ8BbhYl+r8ZpP0q/o7vIxxn9gI+l55JqW7O3f5s5g==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
     
     <style>
         /* Modern Thin Scrollbars for IP Registries */
@@ -3374,7 +3382,7 @@ function generate_dashboard() {
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center gap-3">
                     <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.7)]" id="status-indicator"></div>
-                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v9.72</span></h1>
+                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v9.73</span></h1>
                 </div>
                 
                 <div class="flex items-center gap-2 bg-gray-100 dark:bg-dark-900 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
@@ -3519,8 +3527,8 @@ function generate_dashboard() {
             }
         });
 
-        // --- 2. CHART ENGINE ---
-        const ctx = document.getElementById('threatChart').getContext('2d');
+        // --- 2. CHART ENGINE (FAULT-TOLERANT) ---
+        let threatChart = null;
         const chartData = {
             labels: [],
             datasets: [{
@@ -3535,23 +3543,28 @@ function generate_dashboard() {
             }]
         };
         
-        const threatChart = new Chart(ctx, {
-            type: 'line',
-            data: chartData,
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: { legend: { display: false } },
-                scales: {
-                    x: { display: false },
-                    y: { 
-                        beginAtZero: true,
-                        grid: { color: 'rgba(156, 163, 175, 0.1)' }
-                    }
-                },
-                animation: { duration: 0 }
-            }
-        });
+        try {
+            const ctx = document.getElementById('threatChart').getContext('2d');
+            threatChart = new Chart(ctx, {
+                type: 'line',
+                data: chartData,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { display: false },
+                        y: { 
+                            beginAtZero: true,
+                            grid: { color: 'rgba(156, 163, 175, 0.1)' }
+                        }
+                    },
+                    animation: { duration: 0 }
+                }
+            });
+        } catch (error) {
+            console.warn("Chart.js failed to load. The dashboard will continue running without the graph.", error);
+        }
 
         // --- 3. DATA FETCH ENGINE ---
         const MAX_DATA_POINTS = 30;
@@ -3650,18 +3663,20 @@ function generate_dashboard() {
                     wlIpsEl.innerHTML = '<li class="text-xs text-gray-500 italic col-span-2">Registry is empty.</li>';
                 }
 
-                // Update Chart
+                // Update Chart (Only if it loaded successfully)
                 const now = new Date();
                 const timeString = now.getHours() + ':' + String(now.getMinutes()).padStart(2, '0') + ':' + String(now.getSeconds()).padStart(2, '0');
                 
-                chartData.labels.push(timeString);
-                chartData.datasets[0].data.push(data.layer7.total_banned);
+                if (threatChart) {
+                    chartData.labels.push(timeString);
+                    chartData.datasets[0].data.push(data.layer7.total_banned);
 
-                if (chartData.labels.length > MAX_DATA_POINTS) {
-                    chartData.labels.shift();
-                    chartData.datasets[0].data.shift();
+                    if (chartData.labels.length > MAX_DATA_POINTS) {
+                        chartData.labels.shift();
+                        chartData.datasets[0].data.shift();
+                    }
+                    threatChart.update();
                 }
-                threatChart.update();
 
                 // Update Status UI
                 document.getElementById('last-update').innerText = timeString;
