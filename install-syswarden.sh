@@ -33,7 +33,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v9.64"
+VERSION="v9.65"
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
 BLOCKLIST_FILE="$SYSWARDEN_DIR/blocklist.txt"
@@ -886,10 +886,12 @@ apply_firewall_rules() {
     if [[ "$FIREWALL_BACKEND" == "nftables" ]]; then
         log "INFO" "Configuring Nftables via Atomic Transaction (Zero-Downtime)..."
 
-        # --- SECURITY FIX: ATOMIC NFTABLES RELOAD ---
+        # --- SECURITY FIX: ATOMIC NFTABLES RELOAD (ANTI-OOM) ---
         # By formatting the entire ruleset and massive IP sets into a single 
         # structured file, 'nft -f' will execute a 100% atomic swap at the kernel level.
-        # This entirely eliminates the "Reload Exposure Window" vulnerability.
+        # We define sets as empty first, then append elements in chunks using xargs.
+        # This completely bypasses the Nftables parser memory spike and prevents 
+        # the OOM Killer from crashing small VMs when ingesting 250k+ IPs.
         
         # 1. Start building the atomic configuration file
         cat <<EOF > "$TMP_DIR/syswarden.nft"
@@ -898,28 +900,19 @@ table inet syswarden_table
 delete table inet syswarden_table
 table inet syswarden_table {
 
-    # 2. Inject massive IP sets directly into the transaction
-    set $SET_NAME {
-        type ipv4_addr; flags interval; auto-merge;
-        elements = { $(paste -sd, "$FINAL_LIST") }
-    }
+    # 2. Define massive IP sets (Empty initially)
+    set $SET_NAME { type ipv4_addr; flags interval; auto-merge; }
 EOF
 
         if [[ "${GEOBLOCK_COUNTRIES:-none}" != "none" ]] && [[ -s "$GEOIP_FILE" ]]; then
             cat <<EOF >> "$TMP_DIR/syswarden.nft"
-    set $GEOIP_SET_NAME {
-        type ipv4_addr; flags interval; auto-merge;
-        elements = { $(paste -sd, "$GEOIP_FILE") }
-    }
+    set $GEOIP_SET_NAME { type ipv4_addr; flags interval; auto-merge; }
 EOF
         fi
 
         if [[ "${BLOCK_ASNS:-none}" != "none" ]] && [[ -s "$ASN_FILE" ]]; then
             cat <<EOF >> "$TMP_DIR/syswarden.nft"
-    set $ASN_SET_NAME {
-        type ipv4_addr; flags interval; auto-merge;
-        elements = { $(paste -sd, "$ASN_FILE") }
-    }
+    set $ASN_SET_NAME { type ipv4_addr; flags interval; auto-merge; }
 EOF
         fi
 
@@ -956,6 +949,27 @@ EOF
     }
 }
 EOF
+
+        # 4. APPEND ELEMENTS IN CHUNKS (Anti-OOM Killer)
+        log "INFO" "Populating Nftables sets atomically in chunks (Bypassing memory limits)..."
+        
+        if [[ -s "$FINAL_LIST" ]]; then
+            cat "$FINAL_LIST" | xargs -n 5000 | while read -r chunk; do
+                echo "add element inet syswarden_table $SET_NAME { $(echo "$chunk" | tr ' ' ',') }" >> "$TMP_DIR/syswarden.nft"
+            done
+        fi
+
+        if [[ "${GEOBLOCK_COUNTRIES:-none}" != "none" ]] && [[ -s "$GEOIP_FILE" ]]; then
+            cat "$GEOIP_FILE" | xargs -n 5000 | while read -r chunk; do
+                echo "add element inet syswarden_table $GEOIP_SET_NAME { $(echo "$chunk" | tr ' ' ',') }" >> "$TMP_DIR/syswarden.nft"
+            done
+        fi
+
+        if [[ "${BLOCK_ASNS:-none}" != "none" ]] && [[ -s "$ASN_FILE" ]]; then
+            cat "$ASN_FILE" | xargs -n 5000 | while read -r chunk; do
+                echo "add element inet syswarden_table $ASN_SET_NAME { $(echo "$chunk" | tr ' ' ',') }" >> "$TMP_DIR/syswarden.nft"
+            done
+        fi
 
         log "INFO" "Applying Atomic Nftables Transaction to the Kernel..."
         nft -f "$TMP_DIR/syswarden.nft"
@@ -3903,7 +3917,7 @@ EOF
 # SYSWARDEN v9.40 - UI DASHBOARD GENERATION (EXPANDED REGISTRY)
 # ==============================================================================
 function generate_dashboard() {
-    log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.64)..."
+    log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.65)..."
     
     local UI_DIR="/etc/syswarden/ui"
     mkdir -p "$UI_DIR"
@@ -3966,7 +3980,7 @@ function generate_dashboard() {
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center gap-3">
                     <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.7)]" id="status-indicator"></div>
-                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v9.64</span></h1>
+                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v9.65</span></h1>
                 </div>
                 
                 <div class="flex items-center gap-2 bg-gray-100 dark:bg-dark-900 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
@@ -4791,7 +4805,7 @@ fi
 if [[ "$MODE" != "update" ]]; then
     clear
     echo -e "${GREEN}#############################################################"
-    echo -e "#     SysWarden Tool Installer (Universal v9.64)     #"
+    echo -e "#     SysWarden Tool Installer (Universal v9.65)     #"
     echo -e "#############################################################${NC}"
 fi
 
@@ -4843,22 +4857,22 @@ select_list_type "$MODE"
 select_mirror "$MODE"
 download_list
 
-# --- FIX 2: THE COLD BOOT INJECTION ---
-# Apply the base firewall rules FIRST. This ensures that the kernel modules
-# and base chains/sets are fully initialized before we attempt to inject 
-# tens of thousands of IPs from GeoIP and ASN lists.
-apply_firewall_rules
+# --- FIX 2: THE COLD BOOT INJECTION (FRESH INSTALL ONLY) ---
+# Initialize base chains/sets before downloading massive lists to prevent 
+# service dependency crashes (like Fail2ban starting too early).
+if [[ "$MODE" != "update" ]]; then
+    apply_firewall_rules
+fi
 
 download_geoip
 download_asn
 # --------------------------------------
 
-# --- FIX 3: THE POST-DOWNLOAD RELOAD ---
-# Now that massive lists are downloaded to disk, we must reload the firewall to inject them
-if [[ "$MODE" != "update" ]]; then
-    log "INFO" "Applying massive downloaded lists to active firewall..."
-    apply_firewall_rules
-fi
+# --- FIX 3: THE POST-DOWNLOAD RELOAD (INSTALL & UPDATE) ---
+# Now that massive lists are downloaded/updated on disk, we ALWAYS reload 
+# the firewall to inject the freshest GeoIP, ASN, and Blocklist data.
+log "INFO" "Applying massive downloaded lists to active firewall..."
+apply_firewall_rules
 # --------------------------------------
 
 detect_protected_services

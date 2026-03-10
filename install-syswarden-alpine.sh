@@ -42,7 +42,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v9.64"
+VERSION="v9.65"
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
 BLOCKLIST_FILE="$SYSWARDEN_DIR/blocklist.txt"
@@ -3259,7 +3259,7 @@ EOF
 # SYSWARDEN V9.40 - UI DASHBOARD GENERATION (EXPANDED REGISTRY)
 # ==============================================================================
 function generate_dashboard() {
-    log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.64)..."
+    log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.65)..."
     
     local UI_DIR="/etc/syswarden/ui"
     mkdir -p "$UI_DIR"
@@ -3322,7 +3322,7 @@ function generate_dashboard() {
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center gap-3">
                     <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.7)]" id="status-indicator"></div>
-                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v9.64</span></h1>
+                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v9.65</span></h1>
                 </div>
                 
                 <div class="flex items-center gap-2 bg-gray-100 dark:bg-dark-900 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
@@ -4131,20 +4131,22 @@ select_list_type "$MODE"
 select_mirror "$MODE"
 download_list
 
-# --- FIX 2: THE COLD BOOT INJECTION ---
-# Apply the base firewall rules FIRST so the framework is hot and ready.
-apply_firewall_rules
+# --- FIX 2: THE COLD BOOT INJECTION (FRESH INSTALL ONLY) ---
+# Initialize base chains/sets before downloading massive lists to prevent 
+# service dependency crashes (like Fail2ban starting too early).
+if [[ "$MODE" != "update" ]]; then
+    apply_firewall_rules
+fi
 
 download_geoip
 download_asn
 # --------------------------------------
 
-# --- FIX 3: THE POST-DOWNLOAD RELOAD ---
-# Now that massive lists are downloaded to disk, we must reload the firewall to inject them
-if [[ "$MODE" != "update" ]]; then
-    log "INFO" "Applying massive downloaded lists to active firewall..."
-    apply_firewall_rules
-fi
+# --- FIX 3: THE POST-DOWNLOAD RELOAD (INSTALL & UPDATE) ---
+# Now that massive lists are downloaded/updated on disk, we ALWAYS reload 
+# the firewall to inject the freshest GeoIP, ASN, and Blocklist data.
+log "INFO" "Applying massive downloaded lists to active firewall..."
+apply_firewall_rules
 # --------------------------------------
 
 detect_protected_services
