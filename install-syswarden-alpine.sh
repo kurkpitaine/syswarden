@@ -42,7 +42,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v9.73"
+VERSION="v9.74"
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
 BLOCKLIST_FILE="$SYSWARDEN_DIR/blocklist.txt"
@@ -2839,6 +2839,9 @@ EOF
     rc-service wg-quick.wg0 restart >/dev/null 2>&1 || true
     
     log "INFO" "WireGuard VPN deployed successfully."
+	
+	# --- FIX: Restore default OS umask to prevent strict permission leaks to other functions ---
+    umask 022
 }
 
 display_wireguard_qr() {
@@ -3294,11 +3297,10 @@ jq -n \
   whitelist: { active_ips: $wlc, ips: $wlip }
 }' > "$TMP_FILE"
 
-# --- SECURITY FIX: STRICT JSON EXPOSURE CONTROL ---
-mv -f "$TMP_FILE" "$DATA_FILE"
-# FIX: Cross-platform owner assignment to prevent 'set -e' crashes
-chown nobody:nobody "$DATA_FILE" 2>/dev/null || chown nobody "$DATA_FILE" 2>/dev/null || true
-chmod 600 "$DATA_FILE"
+# FIX: Cross-platform owner assignment and relaxed read permissions (644 instead of 600) for the web server
+mv -f "\$TMP_FILE" "\$DATA_FILE"
+chown nobody:nobody "\$DATA_FILE" 2>/dev/null || chown nobody "\$DATA_FILE" 2>/dev/null || true
+chmod 644 "\$DATA_FILE"
 EOF
 
     # 2. Make executable
@@ -3319,10 +3321,12 @@ EOF
 # SYSWARDEN V9.40 - UI DASHBOARD GENERATION (EXPANDED REGISTRY)
 # ==============================================================================
 function generate_dashboard() {
-    log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.73)..."
+    log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.74)..."
     
     local UI_DIR="/etc/syswarden/ui"
     mkdir -p "$UI_DIR"
+    # --- FIX: Force read/execute access for the Python web server ---
+    chmod 755 "$UI_DIR"
 	
 	# --- DYNAMIC BIND IP ---
     local UI_BIND_IP="127.0.0.1" # Default to Localhost if no VPN
@@ -3382,7 +3386,7 @@ function generate_dashboard() {
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center gap-3">
                     <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.7)]" id="status-indicator"></div>
-                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v9.73</span></h1>
+                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v9.74</span></h1>
                 </div>
                 
                 <div class="flex items-center gap-2 bg-gray-100 dark:bg-dark-900 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
@@ -3698,7 +3702,10 @@ function generate_dashboard() {
 </html>
 EOF
 
-# --- SECURITY FIX: SECURE PYTHON HTTP SERVER (HEADERS & VERSION HIDING) ---
+    # --- FIX: Make HTML readable by the Python web server (running as nobody) ---
+    chmod 644 "$UI_DIR/index.html"
+
+    # --- SECURITY FIX: SECURE PYTHON HTTP SERVER (HEADERS & VERSION HIDING) ---
     # Replaces the default python -m http.server to inject strict security headers
     # and prevent Server version disclosure (Mitigates F11 and F17).
     local UI_SERVER_BIN="/usr/local/bin/syswarden-ui-server.py"
