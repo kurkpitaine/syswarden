@@ -33,7 +33,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v9.82"
+VERSION="v9.83"
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
 BLOCKLIST_FILE="$SYSWARDEN_DIR/blocklist.txt"
@@ -453,9 +453,24 @@ auto_whitelist_admin() {
     
     # Process the IP
     if [[ "$admin_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$admin_ip" != "127.0.0.1" ]]; then
-        if ! grep -q "^${admin_ip}$" "$WHITELIST_FILE" 2>/dev/null; then
-            log "INFO" "Auto-whitelisting current admin SSH session IP: $admin_ip"
-            echo "$admin_ip" >> "$WHITELIST_FILE"
+        # --- FIX: DO NOT AUTO-WHITELIST THE VPN SUBNET ---
+        # If the admin is connected via WireGuard, we skip the absolute whitelist
+        # because the VPN subnet is already allowed natively (Priority -50).
+        local is_vpn_ip=0
+        if [[ -n "${WG_SUBNET:-}" ]]; then
+            local subnet_base=$(echo "$WG_SUBNET" | cut -d'.' -f1,2,3)
+            if [[ "$admin_ip" == "${subnet_base}."* ]]; then
+                is_vpn_ip=1
+            fi
+        fi
+        
+        if [[ $is_vpn_ip -eq 1 ]]; then
+            log "INFO" "Admin connected via VPN ($admin_ip). Skipping absolute whitelist."
+        else
+            if ! grep -q "^${admin_ip}$" "$WHITELIST_FILE" 2>/dev/null; then
+                log "INFO" "Auto-whitelisting current admin SSH session IP: $admin_ip"
+                echo "$admin_ip" >> "$WHITELIST_FILE"
+            fi
         fi
     else
         log "WARN" "CRITICAL: Could not auto-detect admin SSH IP. You risk being locked out!"
@@ -1061,8 +1076,14 @@ EOF
             
             # 2. Universal SSH Port Purge (Cleans lingering SSH rules from ALL zones)
             for zone in $(firewall-cmd --get-zones 2>/dev/null || echo "public"); do
-                firewall-cmd --permanent --zone="$zone" --remove-port="${SSH_PORT:-22}/tcp" >/dev/null 2>&1 || true
+                # --- FIX ALMA/RHEL: AGGRESSIVE PHANTOM SERVICE PURGE ---
+                # Firewalld templates stubbornly keep 'ssh' visible. We purge it from both Runtime and Permanent states.
+                firewall-cmd --zone="$zone" --remove-service="ssh" >/dev/null 2>&1 || true
                 firewall-cmd --permanent --zone="$zone" --remove-service="ssh" >/dev/null 2>&1 || true
+                
+                firewall-cmd --zone="$zone" --remove-port="${SSH_PORT:-22}/tcp" >/dev/null 2>&1 || true
+                firewall-cmd --permanent --zone="$zone" --remove-port="${SSH_PORT:-22}/tcp" >/dev/null 2>&1 || true
+                
                 # Explicitly remove any existing rich rules for SSH to prevent conflicts
                 firewall-cmd --permanent --zone="$zone" --remove-rich-rule="rule family='ipv4' port port='${SSH_PORT:-22}' protocol='tcp' accept" >/dev/null 2>&1 || true
                 firewall-cmd --permanent --zone="$zone" --remove-rich-rule="rule family='ipv4' port port='${SSH_PORT:-22}' protocol='tcp' drop" >/dev/null 2>&1 || true
@@ -4008,7 +4029,7 @@ EOF
 # SYSWARDEN v9.40 - UI DASHBOARD GENERATION (EXPANDED REGISTRY)
 # ==============================================================================
 function generate_dashboard() {
-    log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.82)..."
+    log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.83)..."
     
     local UI_DIR="/etc/syswarden/ui"
     mkdir -p "$UI_DIR"
@@ -4073,7 +4094,7 @@ function generate_dashboard() {
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center gap-3">
                     <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.7)]" id="status-indicator"></div>
-                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v9.82</span></h1>
+                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v9.83</span></h1>
                 </div>
                 
                 <div class="flex items-center gap-2 bg-gray-100 dark:bg-dark-900 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
@@ -4910,7 +4931,7 @@ fi
 if [[ "$MODE" != "update" ]]; then
     clear
     echo -e "${GREEN}#############################################################"
-    echo -e "#     SysWarden Tool Installer (Universal v9.82)     #"
+    echo -e "#     SysWarden Tool Installer (Universal v9.83)     #"
     echo -e "#############################################################${NC}"
 fi
 
