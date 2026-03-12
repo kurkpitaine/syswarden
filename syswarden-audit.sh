@@ -40,32 +40,32 @@ TOTAL=0
 AUDIT_LOG="/var/log/syswarden-audit.log"
 # Secure the log file immediately (Prevent unauthorized reading of the audit results)
 touch "$AUDIT_LOG" && chmod 600 "$AUDIT_LOG"
-echo "=== SYSWARDEN PURPLE TEAM AUDIT STARTED: $(date -u +"%Y-%m-%dT%H:%M:%SZ") ===" > "$AUDIT_LOG"
+echo "=== SYSWARDEN PURPLE TEAM AUDIT STARTED: $(date -u +"%Y-%m-%dT%H:%M:%SZ") ===" >"$AUDIT_LOG"
 
 # --- HELPERS (Dual-Output: Console + Standardized Log) ---
-log_header() { 
+log_header() {
     echo -e "\n${BLUE}${BOLD}=== $1 ===${NC}"
-    echo -e "\n--- $1 ---" >> "$AUDIT_LOG"
+    echo -e "\n--- $1 ---" >>"$AUDIT_LOG"
 }
-pass() { 
+pass() {
     echo -e "  [${GREEN}PASS${NC}] $1"
-    echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") [PASS] $1" >> "$AUDIT_LOG"
+    echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") [PASS] $1" >>"$AUDIT_LOG"
     SCORE=$((SCORE + 1))
     TOTAL=$((TOTAL + 1))
 }
-fail() { 
+fail() {
     echo -e "  [${RED}FAIL${NC}] $1"
-    echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") [FAIL] $1" >> "$AUDIT_LOG"
+    echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") [FAIL] $1" >>"$AUDIT_LOG"
     TOTAL=$((TOTAL + 1))
 }
-warn() { 
+warn() {
     echo -e "  [${YELLOW}WARN${NC}] $1"
-    echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") [WARN] $1" >> "$AUDIT_LOG"
+    echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") [WARN] $1" >>"$AUDIT_LOG"
     TOTAL=$((TOTAL + 1))
 }
-info() { 
+info() {
     echo -e "  [${BLUE}INFO${NC}] $1"
-    echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") [INFO] $1" >> "$AUDIT_LOG"
+    echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") [INFO] $1" >>"$AUDIT_LOG"
 }
 
 is_service_active() {
@@ -187,7 +187,7 @@ log_header "Phase 3: Kernel Shield & Threat Intelligence"
 
 # Check if the global blocklist payload is actively staged
 if [[ -s "/etc/syswarden/active_global_blocklist.txt" ]]; then
-    LINES=$(wc -l < /etc/syswarden/active_global_blocklist.txt)
+    LINES=$(wc -l </etc/syswarden/active_global_blocklist.txt)
     pass "Global Blocklist is populated ($LINES active records)."
 else
     fail "Global Blocklist is missing or empty."
@@ -195,13 +195,13 @@ fi
 
 # Firewall Engine Discovery & Rules Injection Audit
 FW_ENGINE="Unknown"
-if command -v nft >/dev/null && nft list table inet syswarden_table >/dev/null 2>&1; then 
+if command -v nft >/dev/null && nft list table inet syswarden_table >/dev/null 2>&1; then
     FW_ENGINE="Nftables"
-elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then 
+elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
     FW_ENGINE="Firewalld"
-elif command -v ufw >/dev/null && ufw status | grep -q "Status: active" && grep -q "syswarden" /etc/ufw/before.rules 2>/dev/null; then 
+elif command -v ufw >/dev/null && ufw status | grep -q "Status: active" && grep -q "syswarden" /etc/ufw/before.rules 2>/dev/null; then
     FW_ENGINE="UFW"
-elif command -v iptables >/dev/null && iptables -n -L INPUT | grep -q "SysWarden"; then 
+elif command -v iptables >/dev/null && iptables -n -L INPUT | grep -q "SysWarden"; then
     FW_ENGINE="Iptables"
 fi
 
@@ -216,31 +216,31 @@ log_header "Phase 4: Layer 7 Active Defense (Fail2ban)"
 
 if is_service_active "fail2ban"; then
     pass "Fail2ban service is running."
-    
+
     # Ping Fail2ban socket to ensure it hasn't crashed silently
     if fail2ban-client ping >/dev/null 2>&1; then
         pass "Fail2ban socket is highly responsive (Pong)."
-        
+
         # Verify Zero Trust Jail environment (No OS overrides)
         if [[ -f "/etc/fail2ban/jail.d/alpine-ssh.conf" ]] || [[ -f "/etc/fail2ban/jail.d/defaults-debian.conf" ]]; then
             fail "Conflicting default OS jails were detected in jail.d/"
         else
             pass "Zero Trust environment: No conflicting default OS jails found."
         fi
-        
+
         # Audit strict regex anchoring in the core Portscan filter
         if grep -q "^failregex = \^%(__prefix_line)s" /etc/fail2ban/filter.d/syswarden-portscan.conf 2>/dev/null; then
             pass "Strict Regex Anchoring is applied (Log Spoofing vector neutralized)."
         else
             fail "Strict Regex Anchoring missing in the portscan filter."
         fi
-        
+
         # Audit IgnoreIP (Anti Self-DoS)
         IGNORE_IPS=$(fail2ban-client get sshd ignoreip 2>/dev/null || true)
-        
+
         # FIX: fail2ban-client outputs IPs on multiple lines. We must count the total IPv4 patterns.
         IP_COUNT=$(echo "$IGNORE_IPS" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort -u | wc -l)
-        
+
         if [[ "$IP_COUNT" -gt 1 ]]; then
             pass "Dynamic IgnoreIP is populated (Anti-Lockout verified)."
         else
@@ -270,7 +270,7 @@ else
 fi
 
 # --- FIX: Verify telemetry payload permissions ---
-# Permissions relaxed to 644 (instead of 600) to allow the unprivileged 
+# Permissions relaxed to 644 (instead of 600) to allow the unprivileged
 # Python web server (running as nobody) to read and serve the JSON data.
 check_file_perms "/etc/syswarden/ui/data.json" "644" "nobody"
 
@@ -294,7 +294,7 @@ echo -e "\n=== Phase 6: VPN & Zero Trust Remote Access (WireGuard) ==="
 
 # Purple Team Verification: Checking if the VPN is configured and acting as a strict gateway
 if [[ -d "/etc/wireguard" ]] && [[ -f "/etc/wireguard/wg0.conf" ]]; then
-    
+
     # --- Check 1: Tunnel Interface State ---
     TOTAL=$((TOTAL + 1))
     if ip link show wg0 >/dev/null 2>&1; then
@@ -388,14 +388,14 @@ fi
 echo -e "\n${BOLD}==============================================================================${NC}"
 if [[ $SCORE -eq $TOTAL ]]; then
     echo -e "${GREEN}>>> AUDIT SUCCESSFUL: $SCORE/$TOTAL checks passed. System is fully DevSecOps compliant. <<<${NC}"
-    echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") [RESULT] SUCCESS - $SCORE/$TOTAL checks passed." >> "$AUDIT_LOG"
+    echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") [RESULT] SUCCESS - $SCORE/$TOTAL checks passed." >>"$AUDIT_LOG"
 else
     PERCENT=$((SCORE * 100 / TOTAL))
     echo -e "${RED}>>> AUDIT FAILED: $SCORE/$TOTAL checks passed ($PERCENT%). Immediate review required. <<<${NC}"
-    echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") [RESULT] FAILED - $SCORE/$TOTAL checks passed ($PERCENT%)." >> "$AUDIT_LOG"
+    echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") [RESULT] FAILED - $SCORE/$TOTAL checks passed ($PERCENT%)." >>"$AUDIT_LOG"
 fi
 echo -e "${BOLD}==============================================================================${NC}"
 
 # Display the location of the standardized log file
 echo -e "📄 ${BOLD}Full Standardized Audit Log securely saved to:${NC} ${YELLOW}$AUDIT_LOG${NC}\n"
-echo "=== AUDIT COMPLETED: $(date -u +"%Y-%m-%dT%H:%M:%SZ") ===" >> "$AUDIT_LOG"
+echo "=== AUDIT COMPLETED: $(date -u +"%Y-%m-%dT%H:%M:%SZ") ===" >>"$AUDIT_LOG"

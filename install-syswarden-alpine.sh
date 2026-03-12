@@ -76,14 +76,15 @@ URLS_CRITICAL[Codeberg]="https://codeberg.org/duggytuxy21/Data-Shield_IPv4_Block
 log() {
     local level="$1"
     local message="$2"
-    local timestamp; timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    local timestamp
+    timestamp=$(date "+%Y-%m-%d %H:%M:%S")
     echo -e "${timestamp} [${level}] ${message}" | tee -a "$LOG_FILE"
 }
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-       echo -e "${RED}ERROR: This script must be run as root.${NC}"
-       exit 1
+        echo -e "${RED}ERROR: This script must be run as root.${NC}"
+        exit 1
     fi
 }
 
@@ -94,7 +95,7 @@ trap cleanup EXIT
 
 detect_os_backend() {
     log "INFO" "Detecting Operating System and Firewall Backend..."
-    
+
     if [ -f /etc/alpine-release ]; then
         OS="Alpine Linux"
     else
@@ -114,9 +115,9 @@ detect_os_backend() {
 
 install_dependencies() {
     log "INFO" "Installing required dependencies..."
-    
+
     local deps="curl python3 py3-requests ipset fail2ban bash coreutils grep gawk sed procps logrotate ncurses whois rsyslog util-linux wireguard-tools libqrencode libqrencode-tools"
-    
+
     if [[ "$FIREWALL_BACKEND" == "nftables" ]]; then
         deps="$deps nftables"
     else
@@ -127,14 +128,14 @@ install_dependencies() {
     # Temporarily restore default IFS (space) so word splitting works for apk
     local OLD_IFS="$IFS"
     IFS=$' \t\n'
-    
+
     # shellcheck disable=SC2086
     if ! apk add --no-cache $deps >/dev/null; then
         IFS="$OLD_IFS" # Restore strict IFS before exiting on error
         log "ERROR" "Failed to install dependencies via apk. Check your network or repositories."
         exit 1
     fi
-    
+
     IFS="$OLD_IFS" # Restore strict IFS for the rest of the script
     # ----------------------------------
 
@@ -142,10 +143,10 @@ install_dependencies() {
         log "ERROR" "OpenRC is missing. This script requires a standard Alpine setup."
         exit 1
     fi
-	
-	# Ensure standard syslog is active to capture Kernel Firewall Drops
+
+    # Ensure standard syslog is active to capture Kernel Firewall Drops
     rc-update add rsyslog default >/dev/null 2>&1 || true
-    
+
     # --- SECURITY FIX: ALPINE KERNEL LOGGING & LOG INJECTION PREVENTION ---
     # Force rsyslog to write all Netfilter/Nftables drops and Auth logs to DEDICATED files.
     # This prevents unprivileged users from injecting fake logs via logger(1)
@@ -153,27 +154,27 @@ install_dependencies() {
     if [[ -f /etc/rsyslog.conf ]]; then
         # 1. Isolate Kernel Firewall logs
         sed -i '/^kern\./d' /etc/rsyslog.conf
-        echo "kern.* /var/log/kern-firewall.log" >> /etc/rsyslog.conf
+        echo "kern.* /var/log/kern-firewall.log" >>/etc/rsyslog.conf
         touch /var/log/kern-firewall.log && chmod 600 /var/log/kern-firewall.log
-        
+
         # 2. Isolate Auth/PAM logs (su, sudo, sshd)
         sed -i '/^authpriv\./d' /etc/rsyslog.conf
         sed -i '/^auth\./d' /etc/rsyslog.conf
-        echo "auth,authpriv.* /var/log/auth.log" >> /etc/rsyslog.conf
+        echo "auth,authpriv.* /var/log/auth.log" >>/etc/rsyslog.conf
         touch /var/log/auth.log && chmod 600 /var/log/auth.log
     fi
     # ----------------------------------------------------------------------
-    
+
     rc-service rsyslog restart >/dev/null 2>&1 || true
-	
-	# --- SECURITY FIX: OS HARDENING & ANTI-PERSISTENCE ---
+
+    # --- SECURITY FIX: OS HARDENING & ANTI-PERSISTENCE ---
     log "INFO" "Applying strict OS hardening (Crontab, Wheel group, Profiles)..."
-    
+
     # 1. Lock down Crontab (Only root can schedule tasks)
-    echo "root" > /etc/cron.allow
+    echo "root" >/etc/cron.allow
     chmod 600 /etc/cron.allow
     rm -f /etc/cron.deny
-    
+
     # 2. Purge non-root users from privileged groups (wheel/adm/sudo)
     # FIX: Alpine natively places 'daemon' in the 'adm' group, triggering the audit fail.
     for grp in wheel adm sudo; do
@@ -186,13 +187,14 @@ install_dependencies() {
             done
         fi
     done
-    
+
     # 3. Lock down .profile for existing standard users (Prevents SSH Login backdoors)
     for user_dir in /home/*; do
         if [[ -d "$user_dir" ]]; then
-            local user_name; user_name=$(basename "$user_dir")
+            local user_name
+            user_name=$(basename "$user_dir")
             local profile_file="$user_dir/.profile"
-            
+
             # Remove immutable flag if it exists, create/own it, then lock it forever
             chattr -i "$profile_file" 2>/dev/null || true
             touch "$profile_file"
@@ -214,7 +216,7 @@ define_ssh_port() {
     fi
 
     echo -e "\n${BLUE}=== Step: SSH Configuration ===${NC}"
-    
+
     # --- DYNAMIC SSH PORT DETECTION ---
     local detected_port=22
     if command -v sshd >/dev/null; then
@@ -241,18 +243,18 @@ define_ssh_port() {
         SSH_PORT=22
     fi
 
-    echo "SSH_PORT='$SSH_PORT'" >> "$CONF_FILE"
+    echo "SSH_PORT='$SSH_PORT'" >>"$CONF_FILE"
     log "INFO" "SSH Port configured as: $SSH_PORT"
-	
-	# --- SECURITY FIX: DISABLE TCP FORWARDING (ANTI-PIVOTING & EXPOSURE) ---
+
+    # --- SECURITY FIX: DISABLE TCP FORWARDING (ANTI-PIVOTING & EXPOSURE) ---
     # TCP Forwarding allows non-privileged users to bypass firewall rules and expose
     # internal services. We strictly enforce it to 'no'. Dashboard access MUST use WireGuard.
     if [[ -f /etc/ssh/sshd_config ]]; then
         log "INFO" "Ensuring SSH TCP Forwarding is strictly DISABLED..."
-        
+
         sed -i 's/^#AllowTcpForwarding.*/AllowTcpForwarding no/' /etc/ssh/sshd_config
         sed -i 's/^[[:space:]]*AllowTcpForwarding[[:space:]]*yes/AllowTcpForwarding no/' /etc/ssh/sshd_config
-        
+
         rc-service sshd restart >/dev/null 2>&1 || true
     fi
     # ------------------------------------------------------------------------
@@ -287,7 +289,7 @@ define_wireguard() {
             read -p "Enter VPN Subnet (CIDR) [Default: 10.66.66.0/24]: " input_wg_subnet
             WG_SUBNET=${input_wg_subnet:-"10.66.66.0/24"}
         fi
-        
+
         # PRE-CREATION: Ensure /etc/wireguard exists EARLY
         mkdir -p /etc/wireguard
         log "INFO" "WireGuard ENABLED (Port: $WG_PORT, Subnet: $WG_SUBNET)."
@@ -295,11 +297,11 @@ define_wireguard() {
         USE_WIREGUARD="n"
         log "INFO" "WireGuard DISABLED."
     fi
-    
-    echo "USE_WIREGUARD='$USE_WIREGUARD'" >> "$CONF_FILE"
+
+    echo "USE_WIREGUARD='$USE_WIREGUARD'" >>"$CONF_FILE"
     if [[ "$USE_WIREGUARD" == "y" ]]; then
-        echo "WG_PORT='$WG_PORT'" >> "$CONF_FILE"
-        echo "WG_SUBNET='$WG_SUBNET'" >> "$CONF_FILE"
+        echo "WG_PORT='$WG_PORT'" >>"$CONF_FILE"
+        echo "WG_SUBNET='$WG_SUBNET'" >>"$CONF_FILE"
     fi
 }
 
@@ -319,7 +321,7 @@ define_docker_integration() {
         read -p "Do you use Docker on this server? (y/N): " input_docker
     fi
     # -----------------------------
-    
+
     if [[ "$input_docker" =~ ^[Yy]$ ]]; then
         USE_DOCKER="y"
         log "INFO" "Docker integration ENABLED."
@@ -327,7 +329,7 @@ define_docker_integration() {
         USE_DOCKER="n"
         log "INFO" "Docker integration DISABLED."
     fi
-    echo "USE_DOCKER='$USE_DOCKER'" >> "$CONF_FILE"
+    echo "USE_DOCKER='$USE_DOCKER'" >>"$CONF_FILE"
 }
 
 define_geoblocking() {
@@ -355,7 +357,7 @@ define_geoblocking() {
         else
             read -p "Enter country codes separated by space [Default: ru cn kp ir]: " geo_codes
         fi
-        
+
         GEOBLOCK_COUNTRIES=${geo_codes:-ru cn kp ir}
         # Force lowercase for the URL formatting
         GEOBLOCK_COUNTRIES=$(echo "$GEOBLOCK_COUNTRIES" | tr '[:upper:]' '[:lower:]')
@@ -364,7 +366,7 @@ define_geoblocking() {
         GEOBLOCK_COUNTRIES="none"
         log "INFO" "Geo-Blocking DISABLED."
     fi
-    echo "GEOBLOCK_COUNTRIES='$GEOBLOCK_COUNTRIES'" >> "$CONF_FILE"
+    echo "GEOBLOCK_COUNTRIES='$GEOBLOCK_COUNTRIES'" >>"$CONF_FILE"
 }
 
 define_asnblocking() {
@@ -396,13 +398,13 @@ define_asnblocking() {
             echo -e "${YELLOW}Note: Fetching and resolving the Spamhaus ASN-DROP list can take more than 5 minutes.${NC}"
             read -p "Include Spamhaus ASN-DROP list (Cybercrime Hosters)? (Y/n): " use_spamhaus
         fi
-        
+
         BLOCK_ASNS=${asn_list:-none}
         USE_SPAMHAUS_ASN=${use_spamhaus:-y} # Default to yes
-        
+
         # Normalize Spamhaus choice
         if [[ "$USE_SPAMHAUS_ASN" =~ ^[Nn]$ ]]; then USE_SPAMHAUS_ASN="n"; else USE_SPAMHAUS_ASN="y"; fi
-        
+
         if [[ "$BLOCK_ASNS" == "none" ]] && [[ "$USE_SPAMHAUS_ASN" == "n" ]]; then
             BLOCK_ASNS="none"
             log "WARN" "No custom ASNs provided and Spamhaus declined. ASN Blocking DISABLED."
@@ -417,25 +419,27 @@ define_asnblocking() {
         USE_SPAMHAUS_ASN="n"
         log "INFO" "ASN Blocking DISABLED."
     fi
-    echo "BLOCK_ASNS='$BLOCK_ASNS'" >> "$CONF_FILE"
-    echo "USE_SPAMHAUS_ASN='$USE_SPAMHAUS_ASN'" >> "$CONF_FILE"
+    echo "BLOCK_ASNS='$BLOCK_ASNS'" >>"$CONF_FILE"
+    echo "USE_SPAMHAUS_ASN='$USE_SPAMHAUS_ASN'" >>"$CONF_FILE"
 }
 
 auto_whitelist_admin() {
     mkdir -p "$SYSWARDEN_DIR"
     touch "$WHITELIST_FILE"
-    
+
     local admin_ip=""
-    
+
     # 1. Standard SSH env variables
-    if [[ -n "${SSH_CLIENT:-}" ]]; then admin_ip=$(echo "$SSH_CLIENT" | awk '{print $1}' || true)
-    elif [[ -n "${SSH_CONNECTION:-}" ]]; then admin_ip=$(echo "$SSH_CONNECTION" | awk '{print $1}' || true)
+    if [[ -n "${SSH_CLIENT:-}" ]]; then
+        admin_ip=$(echo "$SSH_CLIENT" | awk '{print $1}' || true)
+    elif [[ -n "${SSH_CONNECTION:-}" ]]; then
+        admin_ip=$(echo "$SSH_CONNECTION" | awk '{print $1}' || true)
     fi
-    
+
     # --- SECURITY FIX: BULLETPROOF KERNEL SOCKET DETECTION ---
     # If the user ran 'su -' or 'sudo su', SSH variables are wiped.
-    # We query active SSH sockets directly. Order-independent grep ensures 
-    # compatibility across all versions of ss and netstat, while grep -oE 
+    # We query active SSH sockets directly. Order-independent grep ensures
+    # compatibility across all versions of ss and netstat, while grep -oE
     # perfectly extracts IPv4 even from IPv4-mapped IPv6 addresses (::ffff:IP).
     if [[ -z "$admin_ip" || ! "$admin_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         # Use 'ss' if available (modern iproute2)
@@ -446,13 +450,13 @@ auto_whitelist_admin() {
             admin_ip=$(netstat -tnpa 2>/dev/null | grep -i 'established' | grep -i 'sshd' | awk '{print $5}' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
         fi
     fi
-    
+
     # 3. Final Fallback: 'who' command
     if [[ -z "$admin_ip" || ! "$admin_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         admin_ip=$(who 2>/dev/null | awk '{print $5}' | tr -d '()' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
     fi
     # ---------------------------------------------------------
-    
+
     # Process the IP
     if [[ "$admin_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$admin_ip" != "127.0.0.1" ]]; then
         # --- FIX: DO NOT AUTO-WHITELIST THE VPN SUBNET ---
@@ -464,13 +468,13 @@ auto_whitelist_admin() {
                 is_vpn_ip=1
             fi
         fi
-        
+
         if [[ $is_vpn_ip -eq 1 ]]; then
             log "INFO" "Admin connected via VPN ($admin_ip). Skipping absolute whitelist."
         else
             if ! grep -q "^${admin_ip}$" "$WHITELIST_FILE" 2>/dev/null; then
                 log "INFO" "Auto-whitelisting current admin SSH session IP: $admin_ip"
-                echo "$admin_ip" >> "$WHITELIST_FILE"
+                echo "$admin_ip" >>"$WHITELIST_FILE"
             fi
         fi
     else
@@ -484,7 +488,7 @@ auto_whitelist_admin() {
 
 select_list_type() {
     if [[ "${1:-}" == "update" ]] && [[ -f "$CONF_FILE" ]]; then
-	    # shellcheck source=/dev/null
+        # shellcheck source=/dev/null
         source "$CONF_FILE"
         log "INFO" "Update Mode: Loaded configuration (Type: $LIST_TYPE)"
         return
@@ -504,29 +508,32 @@ select_list_type() {
     # -----------------------------
 
     case "$choice" in
-        1) LIST_TYPE="Standard";;
-        2) LIST_TYPE="Critical";;
-        3) 
-           LIST_TYPE="Custom"
-           if [[ "${1:-}" == "auto" ]]; then
-               CUSTOM_URL=${SYSWARDEN_CUSTOM_URL:-""}
-               log "INFO" "Auto Mode: Custom URL loaded via env var"
-           else
-               read -p "Enter the full URL: " CUSTOM_URL
-           fi
-           
-           # Sanitize: Remove spaces, quotes, and dangerous shell characters
-           CUSTOM_URL=$(echo "$CUSTOM_URL" | tr -d " '\"\;\\$\|\&\<\>\`")
-           if [[ -z "$CUSTOM_URL" ]]; then
-               log "WARN" "Custom URL is empty. Defaulting to Standard List."
-               LIST_TYPE="Standard"
-           fi
-           ;;
-        *) log "ERROR" "Invalid choice. Exiting."; exit 1;;
+        1) LIST_TYPE="Standard" ;;
+        2) LIST_TYPE="Critical" ;;
+        3)
+            LIST_TYPE="Custom"
+            if [[ "${1:-}" == "auto" ]]; then
+                CUSTOM_URL=${SYSWARDEN_CUSTOM_URL:-""}
+                log "INFO" "Auto Mode: Custom URL loaded via env var"
+            else
+                read -p "Enter the full URL: " CUSTOM_URL
+            fi
+
+            # Sanitize: Remove spaces, quotes, and dangerous shell characters
+            CUSTOM_URL=$(echo "$CUSTOM_URL" | tr -d " '\"\;\\$\|\&\<\>\`")
+            if [[ -z "$CUSTOM_URL" ]]; then
+                log "WARN" "Custom URL is empty. Defaulting to Standard List."
+                LIST_TYPE="Standard"
+            fi
+            ;;
+        *)
+            log "ERROR" "Invalid choice. Exiting."
+            exit 1
+            ;;
     esac
-    
-    echo "LIST_TYPE='$LIST_TYPE'" >> "$CONF_FILE"
-    if [[ -n "${CUSTOM_URL:-}" ]]; then echo "CUSTOM_URL='$CUSTOM_URL'" >> "$CONF_FILE"; fi
+
+    echo "LIST_TYPE='$LIST_TYPE'" >>"$CONF_FILE"
+    if [[ -n "${CUSTOM_URL:-}" ]]; then echo "CUSTOM_URL='$CUSTOM_URL'" >>"$CONF_FILE"; fi
     log "INFO" "User selected: $LIST_TYPE Blocklist"
 }
 
@@ -534,7 +541,7 @@ measure_latency() {
     local url="$1"
     local time_sec
     time_sec=$(curl -o /dev/null -s -w '%{time_connect}\n' --connect-timeout 2 "$url" || echo "error")
-    
+
     if [[ "$time_sec" == "error" ]] || [[ -z "$time_sec" ]]; then
         echo "9999"
     else
@@ -544,7 +551,7 @@ measure_latency() {
 
 select_mirror() {
     if [[ "${1:-}" == "update" ]] && [[ -f "$CONF_FILE" ]]; then
-	    # shellcheck source=/dev/null
+        # shellcheck source=/dev/null
         source "$CONF_FILE"
         log "INFO" "Update Mode: keeping mirror $SELECTED_URL"
         return
@@ -552,7 +559,7 @@ select_mirror() {
 
     if [[ "$LIST_TYPE" == "Custom" ]]; then
         SELECTED_URL="$CUSTOM_URL"
-        echo "SELECTED_URL='$SELECTED_URL'" >> "$CONF_FILE"
+        echo "SELECTED_URL='$SELECTED_URL'" >>"$CONF_FILE"
         return
     fi
 
@@ -570,16 +577,16 @@ select_mirror() {
         url="${URL_MAP[$name]}"
         echo -n "Connecting to $name... "
         time=$(measure_latency "$url")
-        
+
         if [[ "$time" -eq 9999 ]]; then
-             echo "FAIL"
+            echo "FAIL"
         else
-             echo "${time} ms"
-             if (( time < fastest_time )); then
+            echo "${time} ms"
+            if ((time < fastest_time)); then
                 fastest_time=$time
                 fastest_url=$url
                 valid_mirror_found=true
-             fi
+            fi
         fi
     done
 
@@ -589,22 +596,22 @@ select_mirror() {
         SELECTED_URL="$fastest_url"
     fi
 
-    echo "SELECTED_URL='$SELECTED_URL'" >> "$CONF_FILE"
+    echo "SELECTED_URL='$SELECTED_URL'" >>"$CONF_FILE"
 }
 
 download_list() {
     echo -e "\n${BLUE}=== Step 3: Downloading Blocklist ===${NC}"
     log "INFO" "Fetching list from $SELECTED_URL..."
-    
+
     local output_file="$TMP_DIR/blocklist.txt"
     if curl -sS -L --retry 3 --connect-timeout 10 "$SELECTED_URL" -o "$output_file"; then
         # --- SECURITY FIX: STRICT CIDR SEMANTIC VALIDATION ---
         # Validates exact octet ranges (0-255) and subnet masks (0-32) to prevent iptables crash (F13)
-        tr -d '\r' < "$output_file" | awk -F'[/.]' 'NF==4 || NF==5 {
+        tr -d '\r' <"$output_file" | awk -F'[/.]' 'NF==4 || NF==5 {
             valid=1; for(i=1;i<=4;i++) if($i<0 || $i>255 || $i=="") valid=0;
             if(NF==5 && ($5<0 || $5>32 || $5=="")) valid=0;
             if(valid) print $0;
-        }' > "$TMP_DIR/clean_list.txt"
+        }' >"$TMP_DIR/clean_list.txt"
         # -----------------------------------------------------
         FINAL_LIST="$TMP_DIR/clean_list.txt"
         log "INFO" "Download success."
@@ -622,13 +629,13 @@ download_geoip() {
     echo -e "\n${BLUE}=== Step: Downloading Geo-Blocking Data ===${NC}"
     mkdir -p "$TMP_DIR"
     mkdir -p "$SYSWARDEN_DIR"
-    : > "$TMP_DIR/geoip_raw.txt"
+    : >"$TMP_DIR/geoip_raw.txt"
 
     for country in $(echo "$GEOBLOCK_COUNTRIES" | tr ' ' '\n'); do
-        if [[ -z "$country" ]]; then continue; fi 
-        
+        if [[ -z "$country" ]]; then continue; fi
+
         echo -n "Fetching IP blocks for ${country^^}... "
-        if curl -sS -L --retry 3 --connect-timeout 5 "https://www.ipdeny.com/ipblocks/data/countries/${country}.zone" >> "$TMP_DIR/geoip_raw.txt"; then
+        if curl -sS -L --retry 3 --connect-timeout 5 "https://www.ipdeny.com/ipblocks/data/countries/${country}.zone" >>"$TMP_DIR/geoip_raw.txt"; then
             echo -e "${GREEN}OK${NC}"
         else
             echo -e "${RED}FAIL${NC}"
@@ -642,7 +649,7 @@ download_geoip() {
             valid=1; for(i=1;i<=4;i++) if($i<0 || $i>255 || $i=="") valid=0;
             if(NF==5 && ($5<0 || $5>32 || $5=="")) valid=0;
             if(valid) print $0;
-        }' "$TMP_DIR/geoip_raw.txt" | sort -u > "$GEOIP_FILE"
+        }' "$TMP_DIR/geoip_raw.txt" | sort -u >"$GEOIP_FILE"
         # -----------------------------------------------------
         log "INFO" "Geo-Blocking list updated successfully."
     else
@@ -659,14 +666,15 @@ download_asn() {
     echo -e "\n${BLUE}=== Step: Downloading ASN Data ===${NC}"
     mkdir -p "$TMP_DIR"
     mkdir -p "$SYSWARDEN_DIR"
-    : > "$TMP_DIR/asn_raw.txt"
+    : >"$TMP_DIR/asn_raw.txt"
 
     if [[ "${USE_SPAMHAUS_ASN:-y}" == "y" ]]; then
         echo -n "Fetching Spamhaus ASN-DROP list (Cybercrime Hosters)... "
         local spamhaus_url="https://www.spamhaus.org/drop/asndrop.json"
-        
-        local spamhaus_asns; spamhaus_asns=$(curl -sS -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" --retry 2 --connect-timeout 5 "$spamhaus_url" 2>/dev/null | grep -Eo '"asn":[[:space:]]*[0-9]+' | grep -Eo '[0-9]+' | sed 's/^/AS/' | tr '\n' ' ' || true)
-        
+
+        local spamhaus_asns
+        spamhaus_asns=$(curl -sS -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" --retry 2 --connect-timeout 5 "$spamhaus_url" 2>/dev/null | grep -Eo '"asn":[[:space:]]*[0-9]+' | grep -Eo '[0-9]+' | sed 's/^/AS/' | tr '\n' ' ' || true)
+
         if [[ -n "$spamhaus_asns" ]]; then
             echo -e "${GREEN}OK${NC}"
             if [[ "$BLOCK_ASNS" == "none" ]] || [[ "$BLOCK_ASNS" == "auto" ]]; then
@@ -685,23 +693,24 @@ download_asn() {
     # Temporarily restore IFS to allow space separation
     local OLD_IFS="$IFS"
     IFS=$' \n\t'
-    
-    local combined_asns; combined_asns=$(echo "$BLOCK_ASNS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
+
+    local combined_asns
+    combined_asns=$(echo "$BLOCK_ASNS" | tr ' ' '\n' | sort -u | tr '\n' ' ')
 
     for asn in $combined_asns; do
         if [[ -z "$asn" ]] || [[ "$asn" == "auto" ]] || [[ "$asn" == "none" ]]; then continue; fi
-        
-        if [[ ! "$asn" =~ ^AS[0-9]+$ ]]; then 
+
+        if [[ ! "$asn" =~ ^AS[0-9]+$ ]]; then
             local clean_num="${asn//[!0-9]/}"
             if [[ -z "$clean_num" ]]; then continue; fi
             asn="AS${clean_num}"
         fi
-        
+
         echo -n "Fetching IP blocks for ${asn}... "
-        
+
         local success=false
         local whois_out=""
-        
+
         # ShellCheck fix: Unused variable '_'
         for _ in 1 2 3; do
             whois_out=$(whois -h whois.radb.net -- "-i origin $asn" 2>&1 || true)
@@ -714,7 +723,7 @@ download_asn() {
         done
 
         if [ "$success" = true ]; then
-            if echo "$whois_out" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}' >> "$TMP_DIR/asn_raw.txt"; then
+            if echo "$whois_out" | grep -Eo '([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}' >>"$TMP_DIR/asn_raw.txt"; then
                 echo -e "${GREEN}OK${NC}"
             else
                 echo -e "${YELLOW}Empty (IPv6-only/No routes)${NC}"
@@ -725,7 +734,7 @@ download_asn() {
         fi
         sleep 0.5
     done
-    
+
     # Restore security IFS
     IFS="$OLD_IFS"
 
@@ -739,8 +748,8 @@ for line in sys.stdin:
         try: nets.append(ipaddress.ip_network(line, strict=False))
         except ValueError: pass
 for net in ipaddress.collapse_addresses(nets):
-    print(net)' < "$TMP_DIR/asn_raw.txt" > "$ASN_FILE"
-        
+    print(net)' <"$TMP_DIR/asn_raw.txt" >"$ASN_FILE"
+
         log "INFO" "ASN Blocklist updated successfully."
     else
         log "WARN" "ASN Blocklist is empty."
@@ -750,32 +759,32 @@ for net in ipaddress.collapse_addresses(nets):
 
 apply_firewall_rules() {
     echo -e "\n${BLUE}=== Step 4: Applying Firewall Rules ($FIREWALL_BACKEND) ===${NC}"
-    
+
     # --- LOCAL PERSISTENCE INJECTION ---
     mkdir -p "$SYSWARDEN_DIR"
     touch "$WHITELIST_FILE" "$BLOCKLIST_FILE"
-    
+
     # 1. Inject local blocklist into the global list
-    cat "$BLOCKLIST_FILE" >> "$FINAL_LIST"
-    
+    cat "$BLOCKLIST_FILE" >>"$FINAL_LIST"
+
     # 2. Clean duplicates to ensure firewall stability
     sort -u "$FINAL_LIST" -o "$FINAL_LIST"
 
     # 3. Exclude local whitelisted IPs from the final blocklist
     if [[ -s "$WHITELIST_FILE" ]]; then
-        grep -vFf "$WHITELIST_FILE" "$FINAL_LIST" > "$TMP_DIR/clean_final.txt" || true
+        grep -vFf "$WHITELIST_FILE" "$FINAL_LIST" >"$TMP_DIR/clean_final.txt" || true
         mv "$TMP_DIR/clean_final.txt" "$FINAL_LIST"
     fi
-    
+
     # --- FIX: TELEMETRY PERSISTENCE ---
     # Save the massive compiled list to disk so the telemetry engine can count it instantly
     # without running heavy queries against the kernel every minute.
     cp "$FINAL_LIST" "$SYSWARDEN_DIR/active_global_blocklist.txt"
     # -----------------------------------
-    
+
     if [[ "$FIREWALL_BACKEND" == "nftables" ]]; then
         log "INFO" "Configuring Nftables via Atomic Transaction (Alpine Flat Syntax)..."
-        
+
         rc-update add nftables default >/dev/null 2>&1 || true
         rc-service nftables start >/dev/null 2>&1 || true
 
@@ -783,48 +792,48 @@ apply_firewall_rules() {
         # We build the entire flat ruleset and sets inside a single file,
         # then apply it via 'nft -f' to guarantee kernel-level atomicity.
         # We chunk elements inside the file to bypass Alpine memory limits.
-        
-        cat <<EOF > "$TMP_DIR/syswarden.nft"
+
+        cat <<EOF >"$TMP_DIR/syswarden.nft"
 add table inet syswarden_table
 flush table inet syswarden_table
 add set inet syswarden_table $SET_NAME { type ipv4_addr; flags interval; auto-merge; }
 EOF
 
         if [[ "${GEOBLOCK_COUNTRIES:-none}" != "none" ]] && [[ -s "$GEOIP_FILE" ]]; then
-            echo "add set inet syswarden_table $GEOIP_SET_NAME { type ipv4_addr; flags interval; auto-merge; }" >> "$TMP_DIR/syswarden.nft"
+            echo "add set inet syswarden_table $GEOIP_SET_NAME { type ipv4_addr; flags interval; auto-merge; }" >>"$TMP_DIR/syswarden.nft"
         fi
 
         if [[ "${BLOCK_ASNS:-none}" != "none" ]] && [[ -s "$ASN_FILE" ]]; then
-            echo "add set inet syswarden_table $ASN_SET_NAME { type ipv4_addr; flags interval; auto-merge; }" >> "$TMP_DIR/syswarden.nft"
+            echo "add set inet syswarden_table $ASN_SET_NAME { type ipv4_addr; flags interval; auto-merge; }" >>"$TMP_DIR/syswarden.nft"
         fi
 
-        cat <<EOF >> "$TMP_DIR/syswarden.nft"
+        cat <<EOF >>"$TMP_DIR/syswarden.nft"
 add chain inet syswarden_table input { type filter hook input priority filter - 10; policy accept; }
 add rule inet syswarden_table input ct state established,related accept
 EOF
 
         if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
-            echo "add rule inet syswarden_table input udp dport ${WG_PORT:-51820} accept" >> "$TMP_DIR/syswarden.nft"
-            echo "add rule inet syswarden_table input iifname { \"wg0\", \"lo\" } tcp dport ${SSH_PORT:-22} accept" >> "$TMP_DIR/syswarden.nft"
-            echo "add rule inet syswarden_table input tcp dport ${SSH_PORT:-22} log prefix \"[SysWarden-SSH-DROP] \" drop" >> "$TMP_DIR/syswarden.nft"
+            echo "add rule inet syswarden_table input udp dport ${WG_PORT:-51820} accept" >>"$TMP_DIR/syswarden.nft"
+            echo "add rule inet syswarden_table input iifname { \"wg0\", \"lo\" } tcp dport ${SSH_PORT:-22} accept" >>"$TMP_DIR/syswarden.nft"
+            echo "add rule inet syswarden_table input tcp dport ${SSH_PORT:-22} log prefix \"[SysWarden-SSH-DROP] \" drop" >>"$TMP_DIR/syswarden.nft"
         fi
 
         if [[ -s "$WHITELIST_FILE" ]]; then
             while IFS= read -r wl_ip; do
                 [[ -z "$wl_ip" ]] && continue
-                echo "add rule inet syswarden_table input ip saddr $wl_ip accept" >> "$TMP_DIR/syswarden.nft"
-            done < "$WHITELIST_FILE"
+                echo "add rule inet syswarden_table input ip saddr $wl_ip accept" >>"$TMP_DIR/syswarden.nft"
+            done <"$WHITELIST_FILE"
         fi
 
         if [[ "${GEOBLOCK_COUNTRIES:-none}" != "none" ]] && [[ -s "$GEOIP_FILE" ]]; then
-            echo "add rule inet syswarden_table input ip saddr @$GEOIP_SET_NAME log prefix \"[SysWarden-GEO] \" drop" >> "$TMP_DIR/syswarden.nft"
+            echo "add rule inet syswarden_table input ip saddr @$GEOIP_SET_NAME log prefix \"[SysWarden-GEO] \" drop" >>"$TMP_DIR/syswarden.nft"
         fi
 
         if [[ "${BLOCK_ASNS:-none}" != "none" ]] && [[ -s "$ASN_FILE" ]]; then
-            echo "add rule inet syswarden_table input ip saddr @$ASN_SET_NAME log prefix \"[SysWarden-ASN] \" drop" >> "$TMP_DIR/syswarden.nft"
+            echo "add rule inet syswarden_table input ip saddr @$ASN_SET_NAME log prefix \"[SysWarden-ASN] \" drop" >>"$TMP_DIR/syswarden.nft"
         fi
 
-        cat <<EOF >> "$TMP_DIR/syswarden.nft"
+        cat <<EOF >>"$TMP_DIR/syswarden.nft"
 add rule inet syswarden_table input ip saddr @$SET_NAME log prefix "[SysWarden-BLOCK] " drop
 add rule inet syswarden_table input tcp dport { 23, 445, 1433, 3389, 5900 } log prefix "[SysWarden-BLOCK] " drop
 EOF
@@ -832,27 +841,27 @@ EOF
         log "INFO" "Populating Nftables sets atomically in chunks (Bypassing memory limits)..."
         if [[ -s "$FINAL_LIST" ]]; then
             cat "$FINAL_LIST" | xargs -n 5000 | while read -r chunk; do
-                echo "add element inet syswarden_table $SET_NAME { $(echo "$chunk" | tr ' ' ',') }" >> "$TMP_DIR/syswarden.nft"
+                echo "add element inet syswarden_table $SET_NAME { $(echo "$chunk" | tr ' ' ',') }" >>"$TMP_DIR/syswarden.nft"
             done
         fi
 
         if [[ "${GEOBLOCK_COUNTRIES:-none}" != "none" ]] && [[ -s "$GEOIP_FILE" ]]; then
             cat "$GEOIP_FILE" | xargs -n 5000 | while read -r chunk; do
-                echo "add element inet syswarden_table $GEOIP_SET_NAME { $(echo "$chunk" | tr ' ' ',') }" >> "$TMP_DIR/syswarden.nft"
+                echo "add element inet syswarden_table $GEOIP_SET_NAME { $(echo "$chunk" | tr ' ' ',') }" >>"$TMP_DIR/syswarden.nft"
             done
         fi
 
         if [[ "${BLOCK_ASNS:-none}" != "none" ]] && [[ -s "$ASN_FILE" ]]; then
             cat "$ASN_FILE" | xargs -n 5000 | while read -r chunk; do
-                echo "add element inet syswarden_table $ASN_SET_NAME { $(echo "$chunk" | tr ' ' ',') }" >> "$TMP_DIR/syswarden.nft"
+                echo "add element inet syswarden_table $ASN_SET_NAME { $(echo "$chunk" | tr ' ' ',') }" >>"$TMP_DIR/syswarden.nft"
             done
         fi
 
         log "INFO" "Applying Atomic Nftables Transaction to the Kernel..."
         nft -f "$TMP_DIR/syswarden.nft"
         # --------------------------------------------
-		
-		# --- FIX: KERNEL FORWARDING & OS-LEVEL BYPASS FOR WIREGUARD ---
+
+        # --- FIX: KERNEL FORWARDING & OS-LEVEL BYPASS FOR WIREGUARD ---
         if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
             log "INFO" "Applying WireGuard routing bypass to native OS tables..."
             if nft list table inet filter >/dev/null 2>&1; then
@@ -879,37 +888,37 @@ EOF
         # --- MODULAR PERSISTENCE (ZERO-TOUCH) ---
         log "INFO" "Saving SysWarden Nftables table to isolated config..."
         mkdir -p /etc/syswarden
-        nft list table inet syswarden_table > /etc/syswarden/syswarden.nft
+        nft list table inet syswarden_table >/etc/syswarden/syswarden.nft
 
         local MAIN_NFT_CONF="/etc/nftables.nft"
         if [[ -f "$MAIN_NFT_CONF" ]]; then
             if ! grep -q 'include "/etc/syswarden/syswarden.nft"' "$MAIN_NFT_CONF"; then
-                echo -e '\n# Added by SysWarden' >> "$MAIN_NFT_CONF"
-                echo 'include "/etc/syswarden/syswarden.nft"' >> "$MAIN_NFT_CONF"
+                echo -e '\n# Added by SysWarden' >>"$MAIN_NFT_CONF"
+                echo 'include "/etc/syswarden/syswarden.nft"' >>"$MAIN_NFT_CONF"
             fi
         else
             log "WARN" "$MAIN_NFT_CONF not found. Creating basic layout."
-            echo '#!/usr/sbin/nft -f' > "$MAIN_NFT_CONF"
-            echo 'flush ruleset' >> "$MAIN_NFT_CONF"
-            echo 'include "/etc/syswarden/syswarden.nft"' >> "$MAIN_NFT_CONF"
+            echo '#!/usr/sbin/nft -f' >"$MAIN_NFT_CONF"
+            echo 'flush ruleset' >>"$MAIN_NFT_CONF"
+            echo 'include "/etc/syswarden/syswarden.nft"' >>"$MAIN_NFT_CONF"
             chmod 755 "$MAIN_NFT_CONF"
         fi
 
     else
         # Fallback IPSET / IPTABLES
         log "INFO" "Applying Iptables rules and loading IPSet lists..."
-        
+
         # FIX: Start the service BEFORE injecting rules to prevent OpenRC state overwrite
         rc-update add iptables default >/dev/null 2>&1 || true
         rc-service iptables start >/dev/null 2>&1 || true
-        
+
         ipset create "${SET_NAME}_tmp" hash:net maxelem 1000000 -exist
         # Shellcheck fix: -! prevents crash on duplicates
         sed "s/^/add ${SET_NAME}_tmp /" "$FINAL_LIST" | ipset restore -!
         ipset create "$SET_NAME" hash:net maxelem 1000000 -exist
         ipset swap "${SET_NAME}_tmp" "$SET_NAME"
         ipset destroy "${SET_NAME}_tmp"
-        
+
         if ! iptables -C INPUT -m set --match-set "$SET_NAME" src -j DROP 2>/dev/null; then
             iptables -I INPUT 1 -m set --match-set "$SET_NAME" src -j DROP
             iptables -I INPUT 1 -m set --match-set "$SET_NAME" src -j LOG --log-prefix "[SysWarden-BLOCK] "
@@ -924,7 +933,7 @@ EOF
             ipset create "$ASN_SET_NAME" hash:net maxelem 1000000 -exist
             ipset swap "${ASN_SET_NAME}_tmp" "$ASN_SET_NAME"
             ipset destroy "${ASN_SET_NAME}_tmp"
-            
+
             if ! iptables -C INPUT -m set --match-set "$ASN_SET_NAME" src -j DROP 2>/dev/null; then
                 iptables -I INPUT 1 -m set --match-set "$ASN_SET_NAME" src -j DROP
                 iptables -I INPUT 1 -m set --match-set "$ASN_SET_NAME" src -j LOG --log-prefix "[SysWarden-ASN] "
@@ -938,14 +947,14 @@ EOF
             ipset create "$GEOIP_SET_NAME" hash:net maxelem 1000000 -exist
             ipset swap "${GEOIP_SET_NAME}_tmp" "$GEOIP_SET_NAME"
             ipset destroy "${GEOIP_SET_NAME}_tmp"
-            
+
             if ! iptables -C INPUT -m set --match-set "$GEOIP_SET_NAME" src -j DROP 2>/dev/null; then
                 iptables -I INPUT 1 -m set --match-set "$GEOIP_SET_NAME" src -j DROP
                 iptables -I INPUT 1 -m set --match-set "$GEOIP_SET_NAME" src -j LOG --log-prefix "[SysWarden-GEO] "
             fi
         fi
-		
-		# --- FIX: RE-INJECT WHITELIST ACCEPT RULES ---
+
+        # --- FIX: RE-INJECT WHITELIST ACCEPT RULES ---
         # Inserted BEFORE WireGuard Cloaking so that WG rules push this down and stay on top.
         if [[ -s "$WHITELIST_FILE" ]]; then
             while IFS= read -r wl_ip; do
@@ -953,7 +962,7 @@ EOF
                 if ! iptables -C INPUT -s "$wl_ip" -j ACCEPT 2>/dev/null; then
                     iptables -I INPUT 1 -s "$wl_ip" -j ACCEPT
                 fi
-            done < "$WHITELIST_FILE"
+            done <"$WHITELIST_FILE"
         fi
         # ---------------------------------------------
 
@@ -969,7 +978,7 @@ EOF
             while iptables -D INPUT -p tcp --dport "${SSH_PORT:-22}" -j DROP 2>/dev/null; do :; done
             while iptables -D INPUT -i wg0 -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT 2>/dev/null; do :; done
             while iptables -D INPUT -i lo -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT 2>/dev/null; do :; done
-            
+
             # Insert top-priority rules (inserted in reverse order)
             iptables -I INPUT 2 -p tcp --dport "${SSH_PORT:-22}" -j DROP
             iptables -I INPUT 2 -i wg0 -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT
@@ -977,34 +986,34 @@ EOF
             iptables -I INPUT 2 -p udp --dport "${WG_PORT:-51820}" -j ACCEPT
         fi
         # -------------------------------------
-        
+
         # Save IPtables persistence for Alpine / OpenRC
         /etc/init.d/iptables save >/dev/null 2>&1 || true
     fi
-    
+
     # --- DOCKER HERMETIC FIREWALL BLOCK ---
     if [[ "${USE_DOCKER:-n}" == "y" ]]; then
         log "INFO" "Applying Global Rules to Docker (DOCKER-USER chain)..."
-        
+
         # 1. Standard Blocklist
         if ! ipset list "$SET_NAME" >/dev/null 2>&1; then
-             ipset create "$SET_NAME" hash:net maxelem 1000000 -exist
-             sed "s/^/add $SET_NAME /" "$FINAL_LIST" | ipset restore -!
+            ipset create "$SET_NAME" hash:net maxelem 1000000 -exist
+            sed "s/^/add $SET_NAME /" "$FINAL_LIST" | ipset restore -!
         fi
 
         # 2. Geo-Blocking Set
         if [[ "${GEOBLOCK_COUNTRIES:-none}" != "none" ]] && [[ -s "$GEOIP_FILE" ]]; then
             if ! ipset list "$GEOIP_SET_NAME" >/dev/null 2>&1; then
-                 ipset create "$GEOIP_SET_NAME" hash:net maxelem 1000000 -exist
-                 sed "s/^/add $GEOIP_SET_NAME /" "$GEOIP_FILE" | ipset restore -!
+                ipset create "$GEOIP_SET_NAME" hash:net maxelem 1000000 -exist
+                sed "s/^/add $GEOIP_SET_NAME /" "$GEOIP_FILE" | ipset restore -!
             fi
         fi
 
         # 3. ASN-Blocking Set
         if [[ "${BLOCK_ASNS:-none}" != "none" ]] && [[ -s "$ASN_FILE" ]]; then
             if ! ipset list "$ASN_SET_NAME" >/dev/null 2>&1; then
-                 ipset create "$ASN_SET_NAME" hash:net maxelem 1000000 -exist
-                 sed "s/^/add $ASN_SET_NAME /" "$ASN_FILE" | ipset restore -!
+                ipset create "$ASN_SET_NAME" hash:net maxelem 1000000 -exist
+                sed "s/^/add $ASN_SET_NAME /" "$ASN_FILE" | ipset restore -!
             fi
         fi
 
@@ -1016,7 +1025,7 @@ EOF
             iptables -D DOCKER-USER -m set --match-set "$GEOIP_SET_NAME" src -j LOG --log-prefix "[SysWarden-GEO] " 2>/dev/null || true
             iptables -D DOCKER-USER -m set --match-set "$ASN_SET_NAME" src -j DROP 2>/dev/null || true
             iptables -D DOCKER-USER -m set --match-set "$ASN_SET_NAME" src -j LOG --log-prefix "[SysWarden-ASN] " 2>/dev/null || true
-            
+
             # Apply Standard Blocklist (Priority 3)
             iptables -I DOCKER-USER 1 -m set --match-set "$SET_NAME" src -j DROP
             iptables -I DOCKER-USER 1 -m set --match-set "$SET_NAME" src -j LOG --log-prefix "[SysWarden-DOCKER] "
@@ -1032,7 +1041,7 @@ EOF
                 iptables -I DOCKER-USER 1 -m set --match-set "$GEOIP_SET_NAME" src -j DROP
                 iptables -I DOCKER-USER 1 -m set --match-set "$GEOIP_SET_NAME" src -j LOG --log-prefix "[SysWarden-GEO] "
             fi
-            
+
             /etc/init.d/iptables save >/dev/null 2>&1 || true
             log "INFO" "Docker firewall rules applied successfully."
         else
@@ -1044,7 +1053,7 @@ EOF
 configure_fail2ban() {
     if command -v fail2ban-client >/dev/null; then
         log "INFO" "Generating Fail2ban configuration (Alpine Zero Trust Mode)..."
-        
+
         # --- SECURITY FIX: ALPINE SSH CONFLICT (ANTI-LOCKOUT) ---
         # Alpine's default jail.d/alpine-ssh.conf overrides our jail.local maxretry (10 vs 3)
         # and port settings. We must delete it to enforce SysWarden's strict rules.
@@ -1053,14 +1062,14 @@ configure_fail2ban() {
             log "INFO" "Removed conflicting default Alpine SSH jail configuration."
         fi
         # --------------------------------------------------------
-        
+
         if [[ -f /etc/fail2ban/jail.local ]] && [[ ! -f /etc/fail2ban/jail.local.bak ]]; then
             log "INFO" "Creating backup of existing jail.local"
             cp /etc/fail2ban/jail.local /etc/fail2ban/jail.local.bak
         fi
 
         # 1. Alpine uses syslog or local files, NOT systemd.
-        cat <<EOF > /etc/fail2ban/fail2ban.local
+        cat <<EOF >/etc/fail2ban/fail2ban.local
 [Definition]
 logtarget = /var/log/fail2ban.log
 EOF
@@ -1071,17 +1080,17 @@ EOF
 
         # --- FIX: DYNAMIC FAIL2BAN INFRASTRUCTURE WHITELIST (ANTI SELF-DOS) ---
         local f2b_ignoreip="127.0.0.1/8 ::1"
-        
+
         # 1. Dynamically extract Public IP of the server
         local public_ip
         public_ip=$(ip -4 addr show | grep -oEo 'inet [0-9.]+' | awk '{print $2}' | grep -v '127.0.0.1' | head -n 1 || true)
         if [[ -n "$public_ip" ]]; then f2b_ignoreip="$f2b_ignoreip $public_ip"; fi
-        
+
         # 2. Dynamically extract active direct subnets (Lab & VPC Network protection)
         local local_subnets
         local_subnets=$(ip -4 route | grep -v default | awk '{print $1}' | tr '\n' ' ' || true)
         if [[ -n "$local_subnets" ]]; then f2b_ignoreip="$f2b_ignoreip $local_subnets"; fi
-        
+
         # 3. Dynamically extract active DNS resolvers
         local dns_ips
         if [[ -f /etc/resolv.conf ]]; then
@@ -1095,12 +1104,12 @@ EOF
             wl_ips=$(grep -vE '^\s*#|^\s*$' "$WHITELIST_FILE" | tr '\n' ' ' || true)
             f2b_ignoreip="$f2b_ignoreip $wl_ips"
         fi
-        
+
         log "INFO" "Fail2ban infrastructure whitelist enforced: $f2b_ignoreip"
         # ----------------------------------------------------------------------
 
         # 3. HEADER & SSH (Always Active - Backend MUST be auto for Alpine)
-        cat <<EOF > /etc/fail2ban/jail.local
+        cat <<EOF >/etc/fail2ban/jail.local
 [DEFAULT]
 bantime = 4h
 bantime.increment = true
@@ -1127,9 +1136,9 @@ EOF
         if [[ -f "/var/log/nginx/access.log" ]] || [[ -f "/var/log/nginx/error.log" ]]; then
             log "INFO" "Nginx logs detected. Enabling Nginx Jail."
             if [[ ! -f "/etc/fail2ban/filter.d/nginx-scanner.conf" ]]; then
-                echo -e "[Definition]\nfailregex = ^<HOST> \\S+ \\S+ \\[.*?\\] \"(GET|POST|HEAD).*\" (400|401|403|404|444) .*$\nignoreregex =" > /etc/fail2ban/filter.d/nginx-scanner.conf
+                echo -e "[Definition]\nfailregex = ^<HOST> \\S+ \\S+ \\[.*?\\] \"(GET|POST|HEAD).*\" (400|401|403|404|444) .*$\nignoreregex =" >/etc/fail2ban/filter.d/nginx-scanner.conf
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Nginx Protection ---
 [nginx-http-auth]
@@ -1160,9 +1169,9 @@ EOF
         if [[ -n "$APACHE_LOG" ]]; then
             log "INFO" "Apache logs detected. Enabling Apache Jail."
             if [[ ! -f "/etc/fail2ban/filter.d/apache-scanner.conf" ]]; then
-                echo -e "[Definition]\nfailregex = ^<HOST> \\S+ \\S+ \\[.*?\\] \"(GET|POST|HEAD) .+\" (400|401|403|404) .+\$\nignoreregex =" > /etc/fail2ban/filter.d/apache-scanner.conf
+                echo -e "[Definition]\nfailregex = ^<HOST> \\S+ \\S+ \\[.*?\\] \"(GET|POST|HEAD) .+\" (400|401|403|404) .+\$\nignoreregex =" >/etc/fail2ban/filter.d/apache-scanner.conf
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Apache Protection ---
 [apache-auth]
@@ -1186,9 +1195,9 @@ EOF
         if [[ -f "/var/log/mongodb/mongod.log" ]]; then
             log "INFO" "MongoDB logs detected. Enabling Mongo Jail."
             if [[ ! -f "/etc/fail2ban/filter.d/mongodb-guard.conf" ]]; then
-                echo -e "[Definition]\nfailregex = ^.*(?:Authentication failed|SASL authentication \S+ failed|Command not found|unauthorized|not authorized).* <HOST>(:[0-9]+)?.*\$\nignoreregex =" > /etc/fail2ban/filter.d/mongodb-guard.conf
+                echo -e "[Definition]\nfailregex = ^.*(?:Authentication failed|SASL authentication \S+ failed|Command not found|unauthorized|not authorized).* <HOST>(:[0-9]+)?.*\$\nignoreregex =" >/etc/fail2ban/filter.d/mongodb-guard.conf
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- MongoDB Protection ---
 [mongodb-guard]
@@ -1201,18 +1210,19 @@ maxretry = 3
 bantime  = 24h
 EOF
         fi
-        
+
         # 7. DYNAMIC DETECTION: MARIADB / MYSQL
         MARIADB_LOG=""
-        if [[ -f "/var/log/mysql/error.log" ]]; then MARIADB_LOG="/var/log/mysql/error.log";
+        if [[ -f "/var/log/mysql/error.log" ]]; then
+            MARIADB_LOG="/var/log/mysql/error.log"
         elif [[ -f "/var/log/mariadb/mariadb.log" ]]; then MARIADB_LOG="/var/log/mariadb/mariadb.log"; fi
 
         if [[ -n "$MARIADB_LOG" ]]; then
             log "INFO" "MariaDB logs detected. Enabling MariaDB Jail."
             if [[ ! -f "/etc/fail2ban/filter.d/mariadb-auth.conf" ]]; then
-                echo -e "[Definition]\nfailregex = ^.*[Aa]ccess denied for user .*@'<HOST>'.*\$\nignoreregex =" > /etc/fail2ban/filter.d/mariadb-auth.conf
+                echo -e "[Definition]\nfailregex = ^.*[Aa]ccess denied for user .*@'<HOST>'.*\$\nignoreregex =" >/etc/fail2ban/filter.d/mariadb-auth.conf
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- MariaDB Protection ---
 [mariadb-auth]
@@ -1225,15 +1235,16 @@ maxretry = 3
 bantime  = 24h
 EOF
         fi
-        
+
         # 8. DYNAMIC DETECTION: POSTFIX (SMTP)
         POSTFIX_LOG=""
-        if [[ -f "/var/log/mail.log" ]]; then POSTFIX_LOG="/var/log/mail.log"
+        if [[ -f "/var/log/mail.log" ]]; then
+            POSTFIX_LOG="/var/log/mail.log"
         elif [[ -f "/var/log/messages" ]]; then POSTFIX_LOG="/var/log/messages"; fi
 
         if [[ -n "$POSTFIX_LOG" ]] && command -v postfix >/dev/null 2>&1; then
             log "INFO" "Postfix detected. Enabling SMTP Jails."
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Postfix SMTP Protection ---
 [postfix]
@@ -1252,11 +1263,11 @@ maxretry = 3
 bantime  = 24h
 EOF
         fi
-        
+
         # 9. DYNAMIC DETECTION: VSFTPD (FTP)
         if [[ -f "/var/log/vsftpd.log" ]]; then
             log "INFO" "VSFTPD logs detected. Enabling FTP Jail."
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- VSFTPD Protection ---
 [vsftpd]
@@ -1268,18 +1279,19 @@ maxretry = 5
 bantime  = 24h
 EOF
         fi
-        
+
         # 10. DYNAMIC DETECTION: WORDPRESS
         WP_LOG=""
-        if [[ -n "$APACHE_ACCESS" ]]; then WP_LOG="$APACHE_ACCESS";
+        if [[ -n "$APACHE_ACCESS" ]]; then
+            WP_LOG="$APACHE_ACCESS"
         elif [[ -f "/var/log/nginx/access.log" ]]; then WP_LOG="/var/log/nginx/access.log"; fi
 
         if [[ -n "$WP_LOG" ]]; then
             log "INFO" "Web logs available. Configuring WordPress Jail."
             if [[ ! -f "/etc/fail2ban/filter.d/wordpress-auth.conf" ]]; then
-                echo -e "[Definition]\nfailregex = ^<HOST> \\S+ \\S+ \\[.*?\\] \"POST .*(wp-login\.php|xmlrpc\.php) HTTP.*\" 200\nignoreregex =" > /etc/fail2ban/filter.d/wordpress-auth.conf
+                echo -e "[Definition]\nfailregex = ^<HOST> \\S+ \\S+ \\[.*?\\] \"POST .*(wp-login\.php|xmlrpc\.php) HTTP.*\" 200\nignoreregex =" >/etc/fail2ban/filter.d/wordpress-auth.conf
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- WordPress Protection ---
 [wordpress-auth]
@@ -1292,11 +1304,12 @@ maxretry = 3
 bantime  = 24h
 EOF
         fi
-		
-		# 10.5. DYNAMIC DETECTION: DRUPAL CMS
+
+        # 10.5. DYNAMIC DETECTION: DRUPAL CMS
         DRUPAL_LOG=""
         # Check for standard web access logs across OS distributions
-        if [[ -n "${APACHE_ACCESS:-}" ]]; then DRUPAL_LOG="$APACHE_ACCESS";
+        if [[ -n "${APACHE_ACCESS:-}" ]]; then
+            DRUPAL_LOG="$APACHE_ACCESS"
         elif [[ -f "/var/log/nginx/access.log" ]]; then DRUPAL_LOG="/var/log/nginx/access.log"; fi
 
         if [[ -n "$DRUPAL_LOG" ]]; then
@@ -1306,14 +1319,14 @@ EOF
             # Matches POST requests to /user/login (Modern Clean URLs) and ?q=user/login (Legacy D7)
             # Logic: A failed login returns HTTP 200 (Form reloads with error). Success returns HTTP 302/303.
             if [[ ! -f "/etc/fail2ban/filter.d/drupal-auth.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/drupal-auth.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/drupal-auth.conf
 [Definition]
 failregex = ^<HOST> \S+ \S+ \[.*?\] "POST .*(?:/user/login|\?q=user/login) HTTP.*" 200.*$
 ignoreregex = 
 EOF
             fi
 
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Drupal CMS Protection ---
 [drupal-auth]
@@ -1326,19 +1339,22 @@ maxretry = 3
 bantime  = 24h
 EOF
         fi
-        
+
         # 11. DYNAMIC DETECTION: NEXTCLOUD
         NC_LOG=""
         for path in "/var/www/nextcloud/data/nextcloud.log" "/var/www/html/nextcloud/data/nextcloud.log" "/var/www/html/data/nextcloud.log"; do
-            if [[ -f "$path" ]]; then NC_LOG="$path"; break; fi
+            if [[ -f "$path" ]]; then
+                NC_LOG="$path"
+                break
+            fi
         done
 
         if [[ -n "$NC_LOG" ]]; then
             log "INFO" "Nextcloud logs detected. Enabling Nextcloud Jail."
             if [[ ! -f "/etc/fail2ban/filter.d/nextcloud.conf" ]]; then
-                echo -e "[Definition]\nfailregex = ^.*Login failed: .* \(Remote IP: '<HOST>'\).*$\nignoreregex =" > /etc/fail2ban/filter.d/nextcloud.conf
+                echo -e "[Definition]\nfailregex = ^.*Login failed: .* \(Remote IP: '<HOST>'\).*$\nignoreregex =" >/etc/fail2ban/filter.d/nextcloud.conf
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Nextcloud Protection ---
 [nextcloud]
@@ -1351,15 +1367,16 @@ maxretry = 3
 bantime  = 24h
 EOF
         fi
-        
+
         # 12. DYNAMIC DETECTION: ASTERISK
         ASTERISK_LOG=""
-        if [[ -f "/var/log/asterisk/messages" ]]; then ASTERISK_LOG="/var/log/asterisk/messages"
+        if [[ -f "/var/log/asterisk/messages" ]]; then
+            ASTERISK_LOG="/var/log/asterisk/messages"
         elif [[ -f "/var/log/asterisk/full" ]]; then ASTERISK_LOG="/var/log/asterisk/full"; fi
 
         if [[ -n "$ASTERISK_LOG" ]]; then
             log "INFO" "Asterisk logs detected. Enabling VoIP Jail."
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Asterisk VoIP Protection ---
 [asterisk]
@@ -1371,14 +1388,14 @@ maxretry = 5
 bantime  = 24h
 EOF
         fi
-        
+
         # 13. DYNAMIC DETECTION: ZABBIX
         if [[ -f "/var/log/zabbix/zabbix_server.log" ]]; then
             log "INFO" "Zabbix logs detected. Enabling Zabbix Jail."
             if [[ ! -f "/etc/fail2ban/filter.d/zabbix-auth.conf" ]]; then
-                echo -e "[Definition]\nfailregex = ^.*failed login of user .* from <HOST>.*\$\nignoreregex =" > /etc/fail2ban/filter.d/zabbix-auth.conf
+                echo -e "[Definition]\nfailregex = ^.*failed login of user .* from <HOST>.*\$\nignoreregex =" >/etc/fail2ban/filter.d/zabbix-auth.conf
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Zabbix Protection ---
 [zabbix-auth]
@@ -1390,14 +1407,14 @@ maxretry = 3
 bantime  = 24h
 EOF
         fi
-        
+
         # 14. DYNAMIC DETECTION: HAPROXY
         if [[ -f "/var/log/haproxy.log" ]]; then
             log "INFO" "HAProxy logs detected. Enabling HAProxy Jail."
             if [[ ! -f "/etc/fail2ban/filter.d/haproxy-guard.conf" ]]; then
-                echo -e "[Definition]\nfailregex = ^.* <HOST>:\d+ .+(400|403|404|429) .+\$\nignoreregex =" > /etc/fail2ban/filter.d/haproxy-guard.conf
+                echo -e "[Definition]\nfailregex = ^.* <HOST>:\d+ .+(400|403|404|429) .+\$\nignoreregex =" >/etc/fail2ban/filter.d/haproxy-guard.conf
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- HAProxy Protection ---
 [haproxy-guard]
@@ -1410,19 +1427,20 @@ maxretry = 5
 bantime  = 24h
 EOF
         fi
-        
+
         # 15. DYNAMIC DETECTION: WIREGUARD
         if [[ -d "/etc/wireguard" ]]; then
             WG_LOG=""
-            if [[ -f "/var/log/kern-firewall.log" ]]; then WG_LOG="/var/log/kern-firewall.log";
+            if [[ -f "/var/log/kern-firewall.log" ]]; then
+                WG_LOG="/var/log/kern-firewall.log"
             elif [[ -f "/var/log/messages" ]]; then WG_LOG="/var/log/messages"; fi
 
             if [[ -n "$WG_LOG" ]]; then
                 log "INFO" "WireGuard detected. Enabling UDP Jail."
                 if [[ ! -f "/etc/fail2ban/filter.d/wireguard.conf" ]]; then
-                    echo -e "[Definition]\nfailregex = ^.*wireguard: .* Handshake for peer .* \\(<HOST>:[0-9]+\\) did not complete.*\$\nignoreregex =" > /etc/fail2ban/filter.d/wireguard.conf
+                    echo -e "[Definition]\nfailregex = ^.*wireguard: .* Handshake for peer .* \\(<HOST>:[0-9]+\\) did not complete.*\$\nignoreregex =" >/etc/fail2ban/filter.d/wireguard.conf
                 fi
-                cat <<EOF >> /etc/fail2ban/jail.local
+                cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- WireGuard Protection ---
 [wireguard]
@@ -1436,19 +1454,20 @@ bantime  = 24h
 EOF
             fi
         fi
-        
+
         # 16. DYNAMIC DETECTION: PHPMYADMIN
         PMA_LOG=""
-        if [[ -n "$APACHE_ACCESS" ]]; then PMA_LOG="$APACHE_ACCESS";
+        if [[ -n "$APACHE_ACCESS" ]]; then
+            PMA_LOG="$APACHE_ACCESS"
         elif [[ -f "/var/log/nginx/access.log" ]]; then PMA_LOG="/var/log/nginx/access.log"; fi
 
         if [[ -d "/usr/share/phpmyadmin" ]] || [[ -d "/var/www/html/phpmyadmin" ]]; then
             if [[ -n "$PMA_LOG" ]]; then
                 log "INFO" "phpMyAdmin detected. Enabling PMA Jail."
                 if [[ ! -f "/etc/fail2ban/filter.d/phpmyadmin-custom.conf" ]]; then
-                     echo -e "[Definition]\nfailregex = ^<HOST> \\S+ \\S+ \\[.*?\\] \"POST .*phpmyadmin.* HTTP.*\" 200\nignoreregex =" > /etc/fail2ban/filter.d/phpmyadmin-custom.conf
+                    echo -e "[Definition]\nfailregex = ^<HOST> \\S+ \\S+ \\[.*?\\] \"POST .*phpmyadmin.* HTTP.*\" 200\nignoreregex =" >/etc/fail2ban/filter.d/phpmyadmin-custom.conf
                 fi
-                cat <<EOF >> /etc/fail2ban/jail.local
+                cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- phpMyAdmin Protection ---
 [phpmyadmin-custom]
@@ -1461,11 +1480,14 @@ bantime  = 24h
 EOF
             fi
         fi
-        
+
         # 17. DYNAMIC DETECTION: LARAVEL
         LARAVEL_LOG=""
         for path in "/var/www/html/storage/logs/laravel.log" "/var/www/storage/logs/laravel.log"; do
-            if [[ -f "$path" ]]; then LARAVEL_LOG="$path"; break; fi
+            if [[ -f "$path" ]]; then
+                LARAVEL_LOG="$path"
+                break
+            fi
         done
         if [[ -z "$LARAVEL_LOG" ]] && [[ -d "/var/www" ]]; then
             LARAVEL_LOG=$(find /var/www -maxdepth 4 -name "laravel.log" 2>/dev/null | head -n 1)
@@ -1474,9 +1496,9 @@ EOF
         if [[ -n "$LARAVEL_LOG" ]]; then
             log "INFO" "Laravel log detected. Enabling Laravel Jail."
             if [[ ! -f "/etc/fail2ban/filter.d/laravel-auth.conf" ]]; then
-                echo -e "[Definition]\nfailregex = ^\\[.*\\] .*: (?:Failed login|Authentication failed|Login failed).*<HOST>.*\$\nignoreregex =" > /etc/fail2ban/filter.d/laravel-auth.conf
+                echo -e "[Definition]\nfailregex = ^\\[.*\\] .*: (?:Failed login|Authentication failed|Login failed).*<HOST>.*\$\nignoreregex =" >/etc/fail2ban/filter.d/laravel-auth.conf
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Laravel Protection ---
 [laravel-auth]
@@ -1488,14 +1510,14 @@ maxretry = 5
 bantime  = 24h
 EOF
         fi
-        
+
         # 18. DYNAMIC DETECTION: GRAFANA
         if [[ -f "/var/log/grafana/grafana.log" ]]; then
             log "INFO" "Grafana logs detected. Enabling Grafana Jail."
             if [[ ! -f "/etc/fail2ban/filter.d/grafana-auth.conf" ]]; then
-                echo -e "[Definition]\nfailregex = ^.*(?:msg=\"Invalid username or password\"|status=401).*remote_addr=<HOST>.*\$\nignoreregex =" > /etc/fail2ban/filter.d/grafana-auth.conf
+                echo -e "[Definition]\nfailregex = ^.*(?:msg=\"Invalid username or password\"|status=401).*remote_addr=<HOST>.*\$\nignoreregex =" >/etc/fail2ban/filter.d/grafana-auth.conf
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Grafana Protection ---
 [grafana-auth]
@@ -1508,15 +1530,16 @@ maxretry = 3
 bantime  = 24h
 EOF
         fi
-        
+
         # 19. DYNAMIC DETECTION: SENDMAIL
         SM_LOG=""
-        if [[ -f "/var/log/mail.log" ]]; then SM_LOG="/var/log/mail.log";
+        if [[ -f "/var/log/mail.log" ]]; then
+            SM_LOG="/var/log/mail.log"
         elif [[ -f "/var/log/messages" ]]; then SM_LOG="/var/log/messages"; fi
 
         if [[ -n "$SM_LOG" ]] && [[ -f "/usr/sbin/sendmail" ]]; then
             log "INFO" "Sendmail detected. Enabling Sendmail Jails."
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Sendmail Protection ---
 [sendmail-auth]
@@ -1536,14 +1559,14 @@ maxretry = 5
 bantime  = 24h
 EOF
         fi
-        
+
         # 20. DYNAMIC DETECTION: SQUID PROXY
         if [[ -f "/var/log/squid/access.log" ]]; then
             log "INFO" "Squid Proxy logs detected. Enabling Squid Jail."
             if [[ ! -f "/etc/fail2ban/filter.d/squid-custom.conf" ]]; then
-                echo -e "[Definition]\nfailregex = ^\s*<HOST> .*(?:TCP_DENIED|ERR_ACCESS_DENIED).*\$\nignoreregex =" > /etc/fail2ban/filter.d/squid-custom.conf
+                echo -e "[Definition]\nfailregex = ^\s*<HOST> .*(?:TCP_DENIED|ERR_ACCESS_DENIED).*\$\nignoreregex =" >/etc/fail2ban/filter.d/squid-custom.conf
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Squid Proxy Protection ---
 [squid-custom]
@@ -1555,11 +1578,11 @@ maxretry = 5
 bantime  = 24h
 EOF
         fi
-        
+
         # --- DOCKER HERMETIC FAIL2BAN BLOCK ---
         if [[ "${USE_DOCKER:-n}" == "y" ]]; then
             log "INFO" "Creating Docker-specific Fail2ban banaction..."
-            cat <<'EOF' > /etc/fail2ban/action.d/syswarden-docker.conf
+            cat <<'EOF' >/etc/fail2ban/action.d/syswarden-docker.conf
 [Definition]
 actionstart = iptables -N f2b-<name>
               iptables -A f2b-<name> -j RETURN
@@ -1573,18 +1596,19 @@ actionunban = iptables -D f2b-<name> -s <ip> -j DROP
 EOF
             log "INFO" "Docker banaction 'syswarden-docker' created successfully."
         fi
-        
+
         # 21. DYNAMIC DETECTION: DOVECOT (IMAP/POP3)
         DOVECOT_LOG=""
-        if [[ -f "/var/log/mail.log" ]]; then DOVECOT_LOG="/var/log/mail.log";
+        if [[ -f "/var/log/mail.log" ]]; then
+            DOVECOT_LOG="/var/log/mail.log"
         elif [[ -f "/var/log/messages" ]]; then DOVECOT_LOG="/var/log/messages"; fi
 
         if [[ -n "$DOVECOT_LOG" ]] && command -v dovecot >/dev/null 2>&1; then
             log "INFO" "Dovecot detected. Enabling IMAP/POP3 Jail."
             if [[ ! -f "/etc/fail2ban/filter.d/dovecot-custom.conf" ]]; then
-                echo -e "[Definition]\nfailregex = ^.*dovecot: .*(?:Authentication failure|Aborted login|auth failed).*rip=<HOST>,.*\$\nignoreregex =" > /etc/fail2ban/filter.d/dovecot-custom.conf
+                echo -e "[Definition]\nfailregex = ^.*dovecot: .*(?:Authentication failure|Aborted login|auth failed).*rip=<HOST>,.*\$\nignoreregex =" >/etc/fail2ban/filter.d/dovecot-custom.conf
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Dovecot Protection ---
 [dovecot-custom]
@@ -1603,9 +1627,9 @@ EOF
             log "INFO" "Proxmox VE detected. Enabling PVE Jail."
             PVE_LOG="/var/log/messages"
             if [[ ! -f "/etc/fail2ban/filter.d/proxmox-custom.conf" ]]; then
-                echo -e "[Definition]\nfailregex = ^.*pvedaemon\\[\\d+\\]: authentication failure; rhost=<HOST> user=.*\$\nignoreregex =" > /etc/fail2ban/filter.d/proxmox-custom.conf
+                echo -e "[Definition]\nfailregex = ^.*pvedaemon\\[\\d+\\]: authentication failure; rhost=<HOST> user=.*\$\nignoreregex =" >/etc/fail2ban/filter.d/proxmox-custom.conf
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Proxmox Protection ---
 [proxmox-custom]
@@ -1621,16 +1645,18 @@ EOF
 
         # 23. DYNAMIC DETECTION: OPENVPN
         OVPN_LOG=""
-        if [[ -f "/var/log/openvpn/openvpn.log" ]]; then OVPN_LOG="/var/log/openvpn/openvpn.log";
-        elif [[ -f "/var/log/openvpn.log" ]]; then OVPN_LOG="/var/log/openvpn.log";
+        if [[ -f "/var/log/openvpn/openvpn.log" ]]; then
+            OVPN_LOG="/var/log/openvpn/openvpn.log"
+        elif [[ -f "/var/log/openvpn.log" ]]; then
+            OVPN_LOG="/var/log/openvpn.log"
         elif [[ -f "/var/log/messages" ]]; then OVPN_LOG="/var/log/messages"; fi
 
         if [[ -d "/etc/openvpn" ]] && [[ -n "$OVPN_LOG" ]]; then
             log "INFO" "OpenVPN detected. Enabling OpenVPN Jail."
             if [[ ! -f "/etc/fail2ban/filter.d/openvpn-custom.conf" ]]; then
-                echo -e "[Definition]\nfailregex = ^.* <HOST>:[0-9]+ (?:TLS Error: TLS handshake failed|VERIFY ERROR:|TLS Auth Error:).*\$\nignoreregex =" > /etc/fail2ban/filter.d/openvpn-custom.conf
+                echo -e "[Definition]\nfailregex = ^.* <HOST>:[0-9]+ (?:TLS Error: TLS handshake failed|VERIFY ERROR:|TLS Auth Error:).*\$\nignoreregex =" >/etc/fail2ban/filter.d/openvpn-custom.conf
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- OpenVPN Protection ---
 [openvpn-custom]
@@ -1647,15 +1673,16 @@ EOF
 
         # 24. DYNAMIC DETECTION: GITEA / FORGEJO
         GITEA_LOG=""
-        if [[ -f "/var/log/gitea/gitea.log" ]]; then GITEA_LOG="/var/log/gitea/gitea.log"
+        if [[ -f "/var/log/gitea/gitea.log" ]]; then
+            GITEA_LOG="/var/log/gitea/gitea.log"
         elif [[ -f "/var/log/forgejo/forgejo.log" ]]; then GITEA_LOG="/var/log/forgejo/forgejo.log"; fi
 
         if [[ -n "$GITEA_LOG" ]]; then
             log "INFO" "Gitea/Forgejo detected. Enabling Git Server Jail."
             if [[ ! -f "/etc/fail2ban/filter.d/gitea-custom.conf" ]]; then
-                echo -e "[Definition]\nfailregex = ^.*Failed authentication attempt for .* from <HOST>:.*\$\nignoreregex =" > /etc/fail2ban/filter.d/gitea-custom.conf
+                echo -e "[Definition]\nfailregex = ^.*Failed authentication attempt for .* from <HOST>:.*\$\nignoreregex =" >/etc/fail2ban/filter.d/gitea-custom.conf
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Gitea / Forgejo Protection ---
 [gitea-custom]
@@ -1668,14 +1695,14 @@ maxretry = 5
 bantime  = 24h
 EOF
         fi
-        
+
         # 25. DYNAMIC DETECTION: COCKPIT
         if [[ -d "/etc/cockpit" ]]; then
             log "INFO" "Cockpit Web Console detected. Enabling Cockpit Jail."
             if [[ ! -f "/etc/fail2ban/filter.d/cockpit-custom.conf" ]]; then
-                echo -e "[Definition]\nfailregex = ^.*cockpit-ws.*(?:authentication failed|invalid user).*from <HOST>.*\$\nignoreregex =" > /etc/fail2ban/filter.d/cockpit-custom.conf
+                echo -e "[Definition]\nfailregex = ^.*cockpit-ws.*(?:authentication failed|invalid user).*from <HOST>.*\$\nignoreregex =" >/etc/fail2ban/filter.d/cockpit-custom.conf
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Cockpit Web Console Protection ---
 [cockpit-custom]
@@ -1688,16 +1715,17 @@ maxretry = 3
 bantime  = 24h
 EOF
         fi
-        
+
         # 26. DYNAMIC DETECTION: PRIVILEGE ESCALATION (PAM / SU / SUDO)
         AUTH_LOG=""
-        if [[ -f "/var/log/auth.log" ]]; then AUTH_LOG="/var/log/auth.log";
+        if [[ -f "/var/log/auth.log" ]]; then
+            AUTH_LOG="/var/log/auth.log"
         elif [[ -f "/var/log/messages" ]]; then AUTH_LOG="/var/log/messages"; fi
 
         if [[ -n "$AUTH_LOG" ]]; then
             log "INFO" "PAM/Auth logs detected. Enabling Privilege Escalation Guard (Su/Sudo)."
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-privesc.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-privesc.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-privesc.conf
 [Definition]
 failregex = ^.*(?:su|sudo)(?:\[\d+\])?: .*pam_unix\((?:su|sudo):auth\): authentication failure;.*rhost=<HOST>(?:\s+user=.*)?\s*$
             ^.*(?:su|sudo)(?:\[\d+\])?: .*(?:FAILED SU|FAILED su|authentication failure).*rhost=<HOST>.*\s*$
@@ -1705,7 +1733,7 @@ failregex = ^.*(?:su|sudo)(?:\[\d+\])?: .*pam_unix\((?:su|sudo):auth\): authenti
 ignoreregex = 
 EOF
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Privilege Escalation Protection (PAM/Su/Sudo) ---
 [syswarden-privesc]
@@ -1719,19 +1747,19 @@ maxretry = 3
 bantime  = 24h
 EOF
         fi
-        
+
         # 27. DYNAMIC DETECTION: CI/CD & DEVOPS INFRASTRUCTURE (JENKINS / GITLAB)
         if [[ -f "/var/log/jenkins/jenkins.log" ]]; then
             log "INFO" "Jenkins CI/CD logs detected. Enabling Jenkins Guard."
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-jenkins.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-jenkins.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-jenkins.conf
 [Definition]
 failregex = ^.*(?:WARN|INFO).* (?:hudson\.security\.AuthenticationProcessingFilter2|jenkins\.security).* (?:unsuccessfulAuthentication|Login attempt failed).* from <HOST>.*\s*$
             ^.*(?:WARN|INFO).* Invalid password/token for user .* from <HOST>.*\s*$
 ignoreregex = 
 EOF
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Jenkins CI/CD Protection ---
 [syswarden-jenkins]
@@ -1746,20 +1774,21 @@ EOF
         fi
 
         GITLAB_LOG=""
-        if [[ -f "/var/log/gitlab/gitlab-rails/application.log" ]]; then GITLAB_LOG="/var/log/gitlab/gitlab-rails/application.log"
+        if [[ -f "/var/log/gitlab/gitlab-rails/application.log" ]]; then
+            GITLAB_LOG="/var/log/gitlab/gitlab-rails/application.log"
         elif [[ -f "/var/log/gitlab/gitlab-rails/auth.log" ]]; then GITLAB_LOG="/var/log/gitlab/gitlab-rails/auth.log"; fi
 
         if [[ -n "$GITLAB_LOG" ]]; then
             log "INFO" "GitLab logs detected. Enabling GitLab Guard."
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-gitlab.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-gitlab.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-gitlab.conf
 [Definition]
 failregex = ^.*(?:Failed Login|Authentication failed).* (?:user|username)=.* (?:ip|IP)=<HOST>.*\s*$
             ^.*ActionController::InvalidAuthenticityToken.* IP: <HOST>.*\s*$
 ignoreregex = 
 EOF
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- GitLab DevOps Protection ---
 [syswarden-gitlab]
@@ -1772,23 +1801,24 @@ maxretry = 5
 bantime  = 24h
 EOF
         fi
-        
+
         # 28. DYNAMIC DETECTION: CRITICAL MIDDLEWARES (REDIS / RABBITMQ)
         REDIS_LOG=""
-        if [[ -f "/var/log/redis/redis-server.log" ]]; then REDIS_LOG="/var/log/redis/redis-server.log"
+        if [[ -f "/var/log/redis/redis-server.log" ]]; then
+            REDIS_LOG="/var/log/redis/redis-server.log"
         elif [[ -f "/var/log/redis/redis.log" ]]; then REDIS_LOG="/var/log/redis/redis.log"; fi
 
         if [[ -n "$REDIS_LOG" ]]; then
             log "INFO" "Redis logs detected. Enabling Redis Guard."
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-redis.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-redis.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-redis.conf
 [Definition]
 failregex = ^.* <HOST>:[0-9]+ .* [Aa]uthentication failed.*\s*$
             ^.* Client <HOST>:[0-9]+ disconnected, .* [Aa]uthentication.*\s*$
 ignoreregex = 
 EOF
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Redis In-Memory Data Store Protection ---
 [syswarden-redis]
@@ -1803,16 +1833,16 @@ EOF
         fi
 
         RABBIT_LOG=""
-        if ls /var/log/rabbitmq/rabbit@*.log 1> /dev/null 2>&1; then
+        if ls /var/log/rabbitmq/rabbit@*.log 1>/dev/null 2>&1; then
             RABBIT_LOG="/var/log/rabbitmq/rabbit@*.log"
-        elif [[ -f "/var/log/rabbitmq/rabbitmq.log" ]]; then 
+        elif [[ -f "/var/log/rabbitmq/rabbitmq.log" ]]; then
             RABBIT_LOG="/var/log/rabbitmq/rabbitmq.log"
         fi
 
         if [[ -n "$RABBIT_LOG" ]]; then
             log "INFO" "RabbitMQ logs detected. Enabling RabbitMQ Guard."
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-rabbitmq.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-rabbitmq.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-rabbitmq.conf
 [Definition]
 failregex = ^.*HTTP access denied: .* from <HOST>.*\s*$
             ^.*AMQP connection <HOST>:[0-9]+ .* failed: .*authentication failure.*\s*$
@@ -1820,7 +1850,7 @@ failregex = ^.*HTTP access denied: .* from <HOST>.*\s*$
 ignoreregex = 
 EOF
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- RabbitMQ Message Broker Protection ---
 [syswarden-rabbitmq]
@@ -1833,16 +1863,17 @@ maxretry = 4
 bantime  = 24h
 EOF
         fi
-        
+
         # 29. DYNAMIC DETECTION: PORT SCANNERS (Alpine kernel logs)
         FIREWALL_LOG=""
-        if [[ -f "/var/log/kern-firewall.log" ]]; then FIREWALL_LOG="/var/log/kern-firewall.log";
-        elif [[ -f "/var/log/messages" ]]; then FIREWALL_LOG="/var/log/messages"; fi 
+        if [[ -f "/var/log/kern-firewall.log" ]]; then
+            FIREWALL_LOG="/var/log/kern-firewall.log"
+        elif [[ -f "/var/log/messages" ]]; then FIREWALL_LOG="/var/log/messages"; fi
 
         if [[ -n "$FIREWALL_LOG" ]]; then
             log "INFO" "Kernel logs detected. Enabling Port Scanner Guard."
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-portscan.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-portscan.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-portscan.conf
 [INCLUDES]
 before = common.conf
 
@@ -1852,7 +1883,7 @@ failregex = ^%(__prefix_line)s(?:kernel: |\[[0-9. ]+\] ).*\[SysWarden-BLOCK\].*S
 ignoreregex = 
 EOF
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Port Scanner & Lateral Movement Protection ---
 [syswarden-portscan]
@@ -1867,20 +1898,20 @@ findtime = 10m
 bantime  = 24h
 EOF
         fi
-        
+
         # 30. DYNAMIC DETECTION: SENSITIVE FILE INTEGRITY & AUDITD ANOMALIES
         AUDIT_LOG="/var/log/audit/audit.log"
         if command -v auditd >/dev/null 2>&1 && [[ -f "$AUDIT_LOG" ]]; then
             log "INFO" "Auditd logs detected. Enabling System Integrity Guard."
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-auditd.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-auditd.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-auditd.conf
 [Definition]
 failregex = ^.*type=(?:USER_LOGIN|USER_AUTH|USER_ERR|USER_CMD).*addr=(?:::f{4}:)?<HOST>.*res=(?:failed|0)\s*$
             ^.*type=ANOM_ABEND.*addr=(?:::f{4}:)?<HOST>.*\s*$
 ignoreregex = 
 EOF
             fi
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- System Integrity & Kernel Audit Protection ---
 [syswarden-auditd]
@@ -1894,7 +1925,7 @@ maxretry = 3
 bantime  = 24h
 EOF
         fi
-        
+
         # 31. DYNAMIC DETECTION: RCE & REVERSE SHELL PAYLOADS
         RCE_LOGS=""
         for log_file in "/var/log/nginx/access.log" "/var/log/apache2/access.log"; do
@@ -1908,14 +1939,14 @@ EOF
             # Catches common payloads: bash interactive, netcat, wget/curl drops, and python/php one-liners
             # FIX: Using regex hex escape '\x25' instead of '%' to strictly bypass Python configparser interpolation crashes
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-revshell.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-revshell.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-revshell.conf
 [Definition]
 failregex = ^<HOST> \S+ \S+ \[.*?\] "(?:GET|POST|HEAD|PUT) .*(?:/bin/bash|\x252Fbin\x252Fbash|/bin/sh|\x252Fbin\x252Fsh|nc\s+-e|nc\x2520-e|nc\s+-c|curl\s+http|curl\x2520http|wget\s+http|wget\x2520http|python\s+-c|php\s+-r|;\s*bash\s+-i|&\s*bash\s+-i).*" .*$
 ignoreregex = 
 EOF
             fi
-			
-            cat <<EOF >> /etc/fail2ban/jail.local
+
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Reverse Shell & RCE Injection Protection ---
 [syswarden-revshell]
@@ -1928,22 +1959,22 @@ maxretry = 1
 bantime  = 24h
 EOF
         fi
-		
-		# 32. DYNAMIC DETECTION: MALICIOUS AI BOTS & SCRAPERS
+
+        # 32. DYNAMIC DETECTION: MALICIOUS AI BOTS & SCRAPERS
         if [[ -n "$RCE_LOGS" ]]; then
             log "INFO" "Web access logs detected. Enabling AI-Bot Guard."
 
             # Create Filter for aggressive AI Scrapers, Crawlers, and LLM data miners
             # Matches HTTP requests containing known AI User-Agents regardless of the HTTP status code (\d{3})
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-aibots.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-aibots.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-aibots.conf
 [Definition]
 failregex = ^<HOST> \S+ \S+ \[.*?\] "(?:GET|POST|HEAD) .*" \d{3} .* ".*(?:GPTBot|ChatGPT-User|OAI-SearchBot|ClaudeBot|Claude-Web|Anthropic-ai|Google-Extended|PerplexityBot|Omgili|FacebookBot|Bytespider|CCBot|Diffbot|Amazonbot|Applebot-Extended|cohere-ai).*".*$
 ignoreregex = 
 EOF
             fi
 
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Malicious AI Bots & Scrapers Protection ---
 [syswarden-aibots]
@@ -1956,8 +1987,8 @@ backend  = auto
 maxretry = 1
 bantime  = 48h
 EOF
-        fi		
-		
+        fi
+
         # 33. DYNAMIC DETECTION: MALICIOUS SCANNERS & PENTEST TOOLS
         if [[ -n "$RCE_LOGS" ]]; then
             log "INFO" "Web access logs detected. Enabling Bad-Bot & Scanner Guard."
@@ -1965,14 +1996,14 @@ EOF
             # Create Filter for aggressive pentest tools, vulnerability scanners, and malicious crawlers
             # Matches HTTP requests containing known offensive User-Agents regardless of the HTTP status code (\d{3})
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-badbots.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-badbots.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-badbots.conf
 [Definition]
 failregex = ^<HOST> \S+ \S+ \[.*?\] "(?:GET|POST|HEAD|PUT|DELETE|OPTIONS) .*" \d{3} .* ".*(?:Nuclei|sqlmap|Nikto|ZmEu|OpenVAS|wpscan|masscan|zgrab|CensysInspect|Shodan|NetSystemsResearch|projectdiscovery|Go-http-client|Java/|Hello World|python-requests|libwww-perl|Acunetix|Nmap|Netsparker|BurpSuite|DirBuster|dirb|gobuster|httpx|ffuf).*".*$
 ignoreregex = 
 EOF
             fi
 
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Malicious Scanners & Pentest Tools Protection ---
 [syswarden-badbots]
@@ -1986,22 +2017,22 @@ maxretry = 1
 bantime  = 48h
 EOF
         fi
-		
-		# 34. DYNAMIC DETECTION: LAYER 7 DDOS (HTTP FLOOD)
+
+        # 34. DYNAMIC DETECTION: LAYER 7 DDOS (HTTP FLOOD)
         if [[ -n "$RCE_LOGS" ]]; then
             log "INFO" "Web access logs detected. Enabling Layer 7 Anti-DDoS Guard."
 
             # Create Filter for HTTP Floods
             # Matches absolutely ANY request (GET, POST, etc.) to count the raw volume per IP
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-httpflood.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-httpflood.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-httpflood.conf
 [Definition]
 failregex = ^<HOST> \S+ \S+ \[.*?\] "(?:GET|POST|HEAD|PUT|DELETE|OPTIONS) .*" \d{3} .*$
 ignoreregex = 
 EOF
             fi
 
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Layer 7 DDoS & HTTP Flood Protection ---
 [syswarden-httpflood]
@@ -2024,14 +2055,14 @@ EOF
             # Create Filter for malicious file uploads
             # Targets specifically POST requests aimed at common upload folders, pushing executable extensions
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-webshell.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-webshell.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-webshell.conf
 [Definition]
 failregex = ^<HOST> \S+ \S+ \[.*?\] "POST .*(?:/upload|/media|/images|/assets|/files|/tmp|/wp-content/uploads).*\.(?:php\d?|phtml|phar|aspx?|ashx|jsp|cgi|pl|py|sh|exe)(?:\?.*)? HTTP/.*" \d{3} .*$
 ignoreregex = 
 EOF
             fi
 
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Malicious WebShell Upload Protection ---
 [syswarden-webshell]
@@ -2054,14 +2085,14 @@ EOF
             # Catches: UNION SELECT, CONCAT, SLEEP, <script>, alert(), document.cookie, eval(), ../../
             # FIX: Used \x25 instead of % to prevent Python ConfigParser interpolation crashes
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-sqli-xss.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-sqli-xss.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-sqli-xss.conf
 [Definition]
 failregex = ^<HOST> \S+ \S+ \[.*?\] "(?:GET|POST|HEAD|PUT) .*(?:UNION(?:\s|\+|\x2520)SELECT|CONCAT(?:\s|\+|\x2520)?\(|WAITFOR(?:\s|\+|\x2520)DELAY|SLEEP(?:\s|\+|\x2520)?\(|\x253Cscript|\x253E|\x253C\x252Fscript|<script|alert\(|onerror=|onload=|document\.cookie|base64_decode\(|eval\(|\.\./\.\./|\x252E\x252E\x252F).*" \d{3} .*$
 ignoreregex = 
 EOF
             fi
 
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- SQL Injection (SQLi) & XSS Protection ---
 [syswarden-sqli-xss]
@@ -2075,22 +2106,22 @@ maxretry = 1
 bantime  = 48h
 EOF
         fi
-		
-		# 37. DYNAMIC DETECTION: STEALTH SECRETS & CONFIG HUNTING
+
+        # 37. DYNAMIC DETECTION: STEALTH SECRETS & CONFIG HUNTING
         if [[ -n "$RCE_LOGS" ]]; then
             log "INFO" "Web access logs detected. Enabling Stealth Secrets Hunter Guard."
 
             # Create Filter for sensitive file and config directory bruteforcing
             # Catches: .env, .git, .aws, id_rsa, .sql, .bak, docker-compose, etc.
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-secretshunter.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-secretshunter.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-secretshunter.conf
 [Definition]
 failregex = ^<HOST> \S+ \S+ \[.*?\] "(?:GET|POST|HEAD|PUT) .*(?:/\.env[^ ]*|/\.git/?.*|/\.aws/?.*|/\.ssh/?.*|/id_rsa[^ ]*|/id_ed25519[^ ]*|/[^ ]*\.(?:sql|bak|swp|db|sqlite3?)(?:\.gz|\.zip)?|/docker-compose\.ya?ml|/wp-config\.php\.(?:bak|save|old|txt|zip)) HTTP/.*" \d{3} .*$
 ignoreregex = 
 EOF
             fi
 
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Stealth Secrets & Config Hunting Protection ---
 [syswarden-secretshunter]
@@ -2104,22 +2135,22 @@ maxretry = 1
 bantime  = 48h
 EOF
         fi
-		
-		# 38. DYNAMIC DETECTION: SSRF & CLOUD METADATA EXFILTRATION
+
+        # 38. DYNAMIC DETECTION: SSRF & CLOUD METADATA EXFILTRATION
         if [[ -n "$RCE_LOGS" ]]; then
             log "INFO" "Web access logs detected. Enabling SSRF & Cloud Metadata Guard."
 
             # Create Filter for Server-Side Request Forgery targeting Cloud instances
             # Catches: 169.254.169.254 (AWS/GCP/Azure/Linode metadata IP) and common metadata endpoints
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-ssrf.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-ssrf.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-ssrf.conf
 [Definition]
 failregex = ^<HOST> \S+ \S+ \[.*?\] "(?:GET|POST|HEAD|PUT) .*(?:169\.254\.169\.254|latest/meta-data|metadata\.google\.internal|/v1/user-data|/metadata/v1).* HTTP/.*" \d{3} .*$
 ignoreregex = 
 EOF
             fi
 
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- SSRF & Cloud Metadata Exfiltration Protection ---
 [syswarden-ssrf]
@@ -2141,7 +2172,7 @@ EOF
             # Create Filter for Log4Shell (JNDI) and Server-Side Template Injection (SSTI)
             # Catches: ${jndi:ldap...}, URL-encoded equivalents, and Spring4Shell payloads in URLs AND User-Agents
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-jndi-ssti.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-jndi-ssti.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-jndi-ssti.conf
 [Definition]
 failregex = ^<HOST> \S+ \S+ \[.*?\] "(?:GET|POST|HEAD|PUT) .*(?:\$\{jndi:|\x2524\x257Bjndi:|class\.module\.classLoader|\x2524\x257Bspring\.macro).* HTTP/.*" \d{3} .*$
             ^<HOST> \S+ \S+ \[.*?\] ".*" \d{3} .* "(?:\$\{jndi:|\x2524\x257Bjndi:).*"$
@@ -2149,7 +2180,7 @@ ignoreregex =
 EOF
             fi
 
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- JNDI, Log4Shell & SSTI Injection Protection ---
 [syswarden-jndi-ssti]
@@ -2163,22 +2194,22 @@ maxretry = 1
 bantime  = 48h
 EOF
         fi
-		
-		# 40. DYNAMIC DETECTION: API MAPPING & SWAGGER HUNTING
+
+        # 40. DYNAMIC DETECTION: API MAPPING & SWAGGER HUNTING
         if [[ -n "$RCE_LOGS" ]]; then
             log "INFO" "Web access logs detected. Enabling API Mapper Guard."
 
             # Create Filter for API Blueprint Hunting (Swagger, OpenAPI, GraphiQL)
             # Triggers strictly on 403/404 errors, meaning the attacker is GUESSING the endpoint paths
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-apimapper.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-apimapper.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-apimapper.conf
 [Definition]
 failregex = ^<HOST> \S+ \S+ \[.*?\] "(?:GET|POST|HEAD) .*(?:/swagger-ui[^ ]*|/openapi\.json|/swagger\.json|/v[1-3]/api-docs|/api-docs[^ ]*|/graphiql|/graphql/schema) HTTP/.*" (403|404) .*$
 ignoreregex = 
 EOF
             fi
 
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- API Mapping & Swagger Hunting Protection ---
 [syswarden-apimapper]
@@ -2201,14 +2232,14 @@ EOF
             # Catches: php://, file://, expect://, /etc/passwd, /etc/shadow, and null byte (%00) injections
             # Note: We use \x25 instead of % to prevent Python ConfigParser interpolation crashes
             if [[ ! -f "/etc/fail2ban/filter.d/syswarden-lfi-advanced.conf" ]]; then
-                cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-lfi-advanced.conf
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-lfi-advanced.conf
 [Definition]
 failregex = ^<HOST> \S+ \S+ \[.*?\] "(?:GET|POST|HEAD|PUT) .*(?:php://(?:filter|input|expect)|php\x253A\x252F\x252F|file://|file\x253A\x252F\x252F|zip://|phar://|/etc/passwd|\x252Fetc\x252Fpasswd|/etc/shadow|/windows/win\.ini|/windows/system32|(?:\x2500|\x252500)[^ ]*\.(?:php|py|sh|pl|rb)).* HTTP/.*" \d{3} .*$
 ignoreregex = 
 EOF
             fi
 
-            cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Advanced LFI & Wrapper Abuse Protection ---
 [syswarden-lfi-advanced]
@@ -2222,31 +2253,34 @@ maxretry = 1
 bantime  = 48h
 EOF
         fi
-		
-		# 42. DYNAMIC DETECTION: VAULTWARDEN (BITWARDEN COMPATIBLE PASSWORD MANAGER)
-		VW_LOG=""
-		# Search for standard Vaultwarden log paths (Native or Docker mounted)
-		for path in "/var/log/vaultwarden/vaultwarden.log" "/vw-data/vaultwarden.log" "/opt/vaultwarden/vaultwarden.log"; do
-			if [[ -f "$path" ]]; then VW_LOG="$path"; break; fi
-		done
 
-		if [[ -n "$VW_LOG" ]]; then
-			log "INFO" "Vaultwarden logs detected. Enabling Vaultwarden Guard."
+        # 42. DYNAMIC DETECTION: VAULTWARDEN (BITWARDEN COMPATIBLE PASSWORD MANAGER)
+        VW_LOG=""
+        # Search for standard Vaultwarden log paths (Native or Docker mounted)
+        for path in "/var/log/vaultwarden/vaultwarden.log" "/vw-data/vaultwarden.log" "/opt/vaultwarden/vaultwarden.log"; do
+            if [[ -f "$path" ]]; then
+                VW_LOG="$path"
+                break
+            fi
+        done
 
-			# Create Filter for Vaultwarden Master Password brute-forcing
-			# Note: Vaultwarden MUST be configured with LOG_IP_ADDRESSES=true or EXTENDED_LOGGING=true
-			# Catches standard Rust backend identity warnings
-			if [[ ! -f "/etc/fail2ban/filter.d/syswarden-vaultwarden.conf" ]]; then
-				cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-vaultwarden.conf
+        if [[ -n "$VW_LOG" ]]; then
+            log "INFO" "Vaultwarden logs detected. Enabling Vaultwarden Guard."
+
+            # Create Filter for Vaultwarden Master Password brute-forcing
+            # Note: Vaultwarden MUST be configured with LOG_IP_ADDRESSES=true or EXTENDED_LOGGING=true
+            # Catches standard Rust backend identity warnings
+            if [[ ! -f "/etc/fail2ban/filter.d/syswarden-vaultwarden.conf" ]]; then
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-vaultwarden.conf
 [Definition]
 failregex = ^.*\[vaultwarden::api::identity\]\[(?:WARN|ERROR)\].*Invalid password.*from <HOST>.*\s*$
             ^.*\[vaultwarden::api::identity\]\[(?:WARN|ERROR)\].*Client IP: <HOST>.*\s*$
             ^.*\[(?:ERROR|WARN)\].*Failed login attempt.*from <HOST>.*\s*$
 ignoreregex = 
 EOF
-			fi
+            fi
 
-			cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Vaultwarden / Bitwarden Password Manager Protection ---
 [syswarden-vaultwarden]
@@ -2259,30 +2293,33 @@ backend  = auto
 maxretry = 3
 bantime  = 24h
 EOF
-		fi
+        fi
 
-		# 43. DYNAMIC DETECTION: IAM & SSO (AUTHELIA / AUTHENTIK)
-		SSO_LOG=""
-		# Check standard output logs for major open-source SSO providers
-		for path in "/var/log/authelia/authelia.log" "/var/log/authentik/authentik.log" "/opt/authelia/authelia.log" "/opt/authentik/authentik.log"; do
-			if [[ -f "$path" ]]; then SSO_LOG="$path"; break; fi
-		done
+        # 43. DYNAMIC DETECTION: IAM & SSO (AUTHELIA / AUTHENTIK)
+        SSO_LOG=""
+        # Check standard output logs for major open-source SSO providers
+        for path in "/var/log/authelia/authelia.log" "/var/log/authentik/authentik.log" "/opt/authelia/authelia.log" "/opt/authentik/authentik.log"; do
+            if [[ -f "$path" ]]; then
+                SSO_LOG="$path"
+                break
+            fi
+        done
 
-		if [[ -n "$SSO_LOG" ]]; then
-			log "INFO" "SSO (Authelia/Authentik) logs detected. Enabling IAM Guard."
+        if [[ -n "$SSO_LOG" ]]; then
+            log "INFO" "SSO (Authelia/Authentik) logs detected. Enabling IAM Guard."
 
-			# Create Filter for Identity and Access Management credential stuffing
-			# Supports both Authelia (logfmt/JSON) and Authentik (JSON) log formats
-			if [[ ! -f "/etc/fail2ban/filter.d/syswarden-sso.conf" ]]; then
-				cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-sso.conf
+            # Create Filter for Identity and Access Management credential stuffing
+            # Supports both Authelia (logfmt/JSON) and Authentik (JSON) log formats
+            if [[ ! -f "/etc/fail2ban/filter.d/syswarden-sso.conf" ]]; then
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-sso.conf
 [Definition]
 failregex = ^.*(?:level=error|level=\"error\").*msg=\"Authentication failed\".*remote_ip=\"<HOST>\".*$
             ^.*(?:\"event\":\"Failed login\"|event=\'Failed login\').*(?:\"client_ip\":\"<HOST>\"|\"remote_ip\":\"<HOST>\").*$
 ignoreregex = 
 EOF
-			fi
+            fi
 
-			cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Authelia / Authentik SSO Protection ---
 [syswarden-sso]
@@ -2295,24 +2332,24 @@ backend  = auto
 maxretry = 3
 bantime  = 24h
 EOF
-		fi
+        fi
 
-		# 44. DYNAMIC DETECTION: BEHAVIORAL SILENT SCANNERS (DIRBUSTER/GOBUSTER)
-		if [[ -n "$RCE_LOGS" ]]; then
-			log "INFO" "Web access logs detected. Enabling Behavioral Scanner Guard."
+        # 44. DYNAMIC DETECTION: BEHAVIORAL SILENT SCANNERS (DIRBUSTER/GOBUSTER)
+        if [[ -n "$RCE_LOGS" ]]; then
+            log "INFO" "Web access logs detected. Enabling Behavioral Scanner Guard."
 
-			# Create Filter for high-frequency 400/401/403/404/405/444 errors
-			# Why? Attackers often spoof legitimate User-Agents (e.g., Chrome) to bypass the 'badbots' jail.
-			# This jail detects the BEHAVIOR of directory brute-forcing (blind guessing paths) rather than the signature.
-			if [[ ! -f "/etc/fail2ban/filter.d/syswarden-silent-scanner.conf" ]]; then
-				cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-silent-scanner.conf
+            # Create Filter for high-frequency 400/401/403/404/405/444 errors
+            # Why? Attackers often spoof legitimate User-Agents (e.g., Chrome) to bypass the 'badbots' jail.
+            # This jail detects the BEHAVIOR of directory brute-forcing (blind guessing paths) rather than the signature.
+            if [[ ! -f "/etc/fail2ban/filter.d/syswarden-silent-scanner.conf" ]]; then
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-silent-scanner.conf
 [Definition]
 failregex = ^<HOST> \S+ \S+ \[.*?\] "(?:GET|POST|HEAD|PUT|DELETE|OPTIONS|PROPFIND) .*" (?:400|401|403|404|405|444) .*$
 ignoreregex = 
 EOF
-			fi
+            fi
 
-			cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Behavioral Silent Scanner Protection (DirBuster/Gobuster) ---
 [syswarden-silent-scanner]
@@ -2326,28 +2363,28 @@ maxretry = 20
 findtime = 10
 bantime  = 48h
 EOF
-		fi
-		
-		# 45. DYNAMIC DETECTION: OPEN PROXY PROBING & EXOTIC HTTP METHOD ABUSE
-		if [[ -n "$RCE_LOGS" ]]; then
-			log "INFO" "Web access logs detected. Enabling Open Proxy & Exotic Method Guard."
+        fi
 
-			# Create Filter for Open Proxy Probing and Tunneling attempts
-			# Attackers send absolute URIs (GET http://target.com) or use the CONNECT method
-			# to check if your web server can be abused as an anonymous forward proxy for botnets.
-			# Also catches TRACE/TRACK (Cross-Site Tracing) and WebDAV methods (PROPFIND, MKCOL) 
-			# often used by ransomware to discover or mount network drives.
-			# Note: We use \x253A for the URL-encoded colon ':' to ensure strict matching.
-			if [[ ! -f "/etc/fail2ban/filter.d/syswarden-proxy-abuse.conf" ]]; then
-				cat <<'EOF' > /etc/fail2ban/filter.d/syswarden-proxy-abuse.conf
+        # 45. DYNAMIC DETECTION: OPEN PROXY PROBING & EXOTIC HTTP METHOD ABUSE
+        if [[ -n "$RCE_LOGS" ]]; then
+            log "INFO" "Web access logs detected. Enabling Open Proxy & Exotic Method Guard."
+
+            # Create Filter for Open Proxy Probing and Tunneling attempts
+            # Attackers send absolute URIs (GET http://target.com) or use the CONNECT method
+            # to check if your web server can be abused as an anonymous forward proxy for botnets.
+            # Also catches TRACE/TRACK (Cross-Site Tracing) and WebDAV methods (PROPFIND, MKCOL)
+            # often used by ransomware to discover or mount network drives.
+            # Note: We use \x253A for the URL-encoded colon ':' to ensure strict matching.
+            if [[ ! -f "/etc/fail2ban/filter.d/syswarden-proxy-abuse.conf" ]]; then
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-proxy-abuse.conf
 [Definition]
 failregex = ^<HOST> \S+ \S+ \[.*?\] "(?:CONNECT|TRACE|TRACK|PROPFIND|PROPPATCH|MKCOL|COPY|MOVE|LOCK|UNLOCK) .*" \d{3} .*$
             ^<HOST> \S+ \S+ \[.*?\] "(?:GET|POST|HEAD) (?:http|https)(?:\x253A|:)//.*" \d{3} .*$
 ignoreregex = 
 EOF
-			fi
+            fi
 
-			cat <<EOF >> /etc/fail2ban/jail.local
+            cat <<EOF >>/etc/fail2ban/jail.local
 
 # --- Open Proxy Abuse & Malicious Tunneling Protection ---
 [syswarden-proxy-abuse]
@@ -2360,20 +2397,20 @@ backend  = auto
 maxretry = 1
 bantime  = 48h
 EOF
-		fi
+        fi
 
         # --- ALPINE FIX: Prevent Fail2ban crash due to missing log files ---
         touch /var/log/messages /var/log/fail2ban.log 2>/dev/null || true
-        
+
         # Enable OpenRC service
         rc-update add fail2ban default >/dev/null 2>&1 || true
         rc-service fail2ban restart >/dev/null 2>&1 || true
-    fi 
+    fi
 }
 
 setup_abuse_reporting() {
     echo -e "\n${BLUE}=== Step 7: AbuseIPDB Reporting Setup ===${NC}"
-    
+
     # --- ENTERPRISE COMPLIANCE KILL-SWITCH ---
     # Strictly prevents telemetry exfiltration regardless of other variables
     if [[ "${SYSWARDEN_ENTERPRISE_MODE:-n}" =~ ^[Yy]$ ]]; then
@@ -2398,7 +2435,7 @@ setup_abuse_reporting() {
         else
             read -p "Enter your AbuseIPDB API Key: " USER_API_KEY
         fi
-        
+
         # Sanitize API Key
         USER_API_KEY=$(echo "$USER_API_KEY" | tr -cd 'a-zA-Z0-9_-')
 
@@ -2426,11 +2463,11 @@ setup_abuse_reporting() {
         fi
 
         log "INFO" "Configuring Unified SysWarden Reporter for Alpine..."
-        
+
         # Create cache directory securely
         mkdir -p /var/lib/syswarden
-        
-        cat <<'EOF' > /usr/local/bin/syswarden_reporter.py
+
+        cat <<'EOF' >/usr/local/bin/syswarden_reporter.py
 #!/usr/bin/env python3
 import subprocess
 import select
@@ -2668,13 +2705,15 @@ if __name__ == "__main__":
 EOF
 
         # Replace placeholders based on user choices
-        local PY_F2B="False"; if [[ "$REPORT_F2B" =~ ^[Yy]$ ]]; then PY_F2B="True"; fi
-        local PY_FW="False"; if [[ "$REPORT_FW" =~ ^[Yy]$ ]]; then PY_FW="True"; fi
+        local PY_F2B="False"
+        if [[ "$REPORT_F2B" =~ ^[Yy]$ ]]; then PY_F2B="True"; fi
+        local PY_FW="False"
+        if [[ "$REPORT_FW" =~ ^[Yy]$ ]]; then PY_FW="True"; fi
 
         sed -i "s/PLACEHOLDER_KEY/$USER_API_KEY/" /usr/local/bin/syswarden_reporter.py
         sed -i "s/PLACEHOLDER_F2B/$PY_F2B/" /usr/local/bin/syswarden_reporter.py
         sed -i "s/PLACEHOLDER_FW/$PY_FW/" /usr/local/bin/syswarden_reporter.py
-        
+
         # --- SECURITY FIX: SECURE ABUSEIPDB API KEY (ALPINE) ---
         # Permissions 750 (rwxr-x---) and ownership given to root and nobody.
         chown root:nobody /usr/local/bin/syswarden_reporter.py
@@ -2682,7 +2721,7 @@ EOF
         # -------------------------------------------------------
 
         log "INFO" "Creating OpenRC service for Reporter..."
-        cat <<'EOF' > /etc/init.d/syswarden-reporter
+        cat <<'EOF' >/etc/init.d/syswarden-reporter
 #!/sbin/openrc-run
 
 name="syswarden-reporter"
@@ -2703,7 +2742,7 @@ EOF
         rc-update add syswarden-reporter default >/dev/null 2>&1
         rc-service syswarden-reporter restart >/dev/null 2>&1
         log "INFO" "AbuseIPDB Unified Reporter is ACTIVE."
-        
+
     else
         log "INFO" "Skipping AbuseIPDB reporting setup."
     fi
@@ -2728,16 +2767,16 @@ setup_cron_autoupdate() {
     if [[ "${1:-}" != "update" ]]; then
         local script_path
         script_path=$(realpath "$0")
-        
+
         # Add to root's crontab natively for Alpine
         if ! grep -q "syswarden-update" /etc/crontabs/root 2>/dev/null; then
-             echo "5 * * * * $script_path update >/dev/null 2>&1 # syswarden-update" >> /etc/crontabs/root
-             rc-update add crond default >/dev/null 2>&1 || true
-             rc-service crond restart >/dev/null 2>&1 || true
-             log "INFO" "Automatic updates enabled via Crond."
+            echo "5 * * * * $script_path update >/dev/null 2>&1 # syswarden-update" >>/etc/crontabs/root
+            rc-update add crond default >/dev/null 2>&1 || true
+            rc-service crond restart >/dev/null 2>&1 || true
+            log "INFO" "Automatic updates enabled via Crond."
         fi
 
-        cat <<EOF > /etc/logrotate.d/syswarden
+        cat <<EOF >/etc/logrotate.d/syswarden
 /var/log/messages
 /var/log/syslog
 $LOG_FILE {
@@ -2760,7 +2799,7 @@ setup_wireguard() {
     fi
 
     echo -e "\n${BLUE}=== Step: Configuring WireGuard VPN ===${NC}"
-    
+
     if [[ -f "/etc/wireguard/wg0.conf" ]]; then
         log "INFO" "WireGuard configuration already exists. Skipping key generation."
         return
@@ -2772,32 +2811,38 @@ setup_wireguard() {
     chmod 700 /etc/wireguard/clients
 
     log "INFO" "Enabling Kernel IPv4 Forwarding..."
-    echo "net.ipv4.ip_forward = 1" > /etc/sysctl.d/99-syswarden-wireguard.conf
+    echo "net.ipv4.ip_forward = 1" >/etc/sysctl.d/99-syswarden-wireguard.conf
     sysctl -p /etc/sysctl.d/99-syswarden-wireguard.conf >/dev/null 2>&1 || true
 
-    local SERVER_PRIV; SERVER_PRIV=$(wg genkey)
-    local SERVER_PUB; SERVER_PUB=$(echo "$SERVER_PRIV" | wg pubkey)
-    local CLIENT_PRIV; CLIENT_PRIV=$(wg genkey)
-    local CLIENT_PUB; CLIENT_PUB=$(echo "$CLIENT_PRIV" | wg pubkey)
-    local PRESHARED_KEY; PRESHARED_KEY=$(wg genpsk)
+    local SERVER_PRIV
+    SERVER_PRIV=$(wg genkey)
+    local SERVER_PUB
+    SERVER_PUB=$(echo "$SERVER_PRIV" | wg pubkey)
+    local CLIENT_PRIV
+    CLIENT_PRIV=$(wg genkey)
+    local CLIENT_PUB
+    CLIENT_PUB=$(echo "$CLIENT_PRIV" | wg pubkey)
+    local PRESHARED_KEY
+    PRESHARED_KEY=$(wg genpsk)
 
-    local ACTIVE_IF; ACTIVE_IF=$(ip route get 8.8.8.8 2>/dev/null | grep -oEo 'dev [a-zA-Z0-9]+' | awk '{print $2}' | head -n 1)
+    local ACTIVE_IF
+    ACTIVE_IF=$(ip route get 8.8.8.8 2>/dev/null | grep -oEo 'dev [a-zA-Z0-9]+' | awk '{print $2}' | head -n 1)
     [[ -z "$ACTIVE_IF" ]] && ACTIVE_IF="eth0"
-    
+
     local SERVER_IP
-    SERVER_IP=$(curl -4 -s --connect-timeout 3 api.ipify.org 2>/dev/null || \
-                curl -4 -s --connect-timeout 3 ifconfig.me 2>/dev/null || \
-                curl -4 -s --connect-timeout 3 icanhazip.com 2>/dev/null || \
-                ip -4 addr show "$ACTIVE_IF" | grep -oEo 'inet [0-9.]+' | awk '{print $2}' | head -n 1)
-    
+    SERVER_IP=$(curl -4 -s --connect-timeout 3 api.ipify.org 2>/dev/null ||
+        curl -4 -s --connect-timeout 3 ifconfig.me 2>/dev/null ||
+        curl -4 -s --connect-timeout 3 icanhazip.com 2>/dev/null ||
+        ip -4 addr show "$ACTIVE_IF" | grep -oEo 'inet [0-9.]+' | awk '{print $2}' | head -n 1)
+
     local SUBNET_BASE
-	SUBNET_BASE=$(echo "$WG_SUBNET" | cut -d'.' -f1,2,3)
+    SUBNET_BASE=$(echo "$WG_SUBNET" | cut -d'.' -f1,2,3)
     local SERVER_VPN_IP="${SUBNET_BASE}.1"
     local CLIENT_VPN_IP="${SUBNET_BASE}.2"
 
     local POSTUP=""
     local POSTDOWN=""
-    
+
     if [[ "$FIREWALL_BACKEND" == "nftables" ]]; then
         POSTUP="nft add table inet syswarden_wg; nft add chain inet syswarden_wg prerouting { type nat hook prerouting priority 0 \\; }; nft add chain inet syswarden_wg postrouting { type nat hook postrouting priority 100 \\; }; nft add rule inet syswarden_wg postrouting oifname \"$ACTIVE_IF\" masquerade"
         POSTDOWN="nft delete table inet syswarden_wg 2>/dev/null || true"
@@ -2810,9 +2855,9 @@ setup_wireguard() {
     # Enclosing file creation in a umask 077 subshell to ensure native 600 permissions
     (
         umask 077
-        
+
         log "INFO" "Deploying WireGuard Server Profile..."
-        cat <<EOF > /etc/wireguard/wg0.conf
+        cat <<EOF >/etc/wireguard/wg0.conf
 [Interface]
 Address = ${SERVER_VPN_IP}/24
 ListenPort = $WG_PORT
@@ -2827,7 +2872,7 @@ AllowedIPs = ${CLIENT_VPN_IP}/32
 EOF
 
         log "INFO" "Generating Secure Client Profile..."
-        cat <<EOF > /etc/wireguard/clients/admin-pc.conf
+        cat <<EOF >/etc/wireguard/clients/admin-pc.conf
 [Interface]
 PrivateKey = $CLIENT_PRIV
 Address = ${CLIENT_VPN_IP}/24
@@ -2852,10 +2897,10 @@ EOF
     fi
     rc-update add wg-quick.wg0 default >/dev/null 2>&1 || true
     rc-service wg-quick.wg0 restart >/dev/null 2>&1 || true
-    
+
     log "INFO" "WireGuard VPN deployed successfully."
-	
-	# --- FIX: Restore default OS umask to prevent strict permission leaks to other functions ---
+
+    # --- FIX: Restore default OS umask to prevent strict permission leaks to other functions ---
     umask 022
 }
 
@@ -2864,9 +2909,9 @@ display_wireguard_qr() {
         echo -e "\n${RED}========================================================================${NC}"
         echo -e "${YELLOW}           WIREGUARD MANAGEMENT VPN - SCAN TO CONNECT${NC}"
         echo -e "${RED}========================================================================${NC}\n"
-        
-        qrencode -t ansiutf8 < /etc/wireguard/clients/admin-pc.conf
-        
+
+        qrencode -t ansiutf8 </etc/wireguard/clients/admin-pc.conf
+
         echo -e "\n${GREEN}[✔] Client Configuration File Saved At:${NC} /etc/wireguard/clients/admin-pc.conf"
         echo -e "${YELLOW}Keep this secure! Scan this code with the WireGuard App to connect.${NC}"
     fi
@@ -2904,7 +2949,7 @@ add_wireguard_client() {
     # --- SECURITY FIX: PREVENT TOCTOU RACE CONDITION ON KEYS ---
     (
         umask 077
-        
+
         # 3. Cryptography
         CLIENT_PRIV=$(wg genkey)
         CLIENT_PUB=$(echo "$CLIENT_PRIV" | wg pubkey)
@@ -2917,7 +2962,7 @@ add_wireguard_client() {
         # 5. IP Calculation
         SUBNET_BASE=$(grep "Address" "$wg_conf" | head -n 1 | awk -F'= ' '{print $2}' | cut -d'/' -f1 | awk -F'.' '{print $1"."$2"."$3}')
         LAST_OCTET=$(grep "AllowedIPs" "$wg_conf" | awk -F'= ' '{print $2}' | cut -d'/' -f1 | awk -F'.' '{print $4}' | sort -n | tail -n 1)
-        
+
         NEXT_OCTET=$((LAST_OCTET + 1))
         if [[ "$NEXT_OCTET" -ge 254 ]]; then
             log "ERROR" "Subnet exhausted. No more IPs available."
@@ -2927,10 +2972,10 @@ add_wireguard_client() {
 
         # 6. Append to Server Config
         log "INFO" "Registering $client_name with IP $CLIENT_VPN_IP..."
-        echo -e "\n# Client: $client_name\n[Peer]\nPublicKey = $CLIENT_PUB\nPresharedKey = $PRESHARED_KEY\nAllowedIPs = ${CLIENT_VPN_IP}/32" >> "$wg_conf"
+        echo -e "\n# Client: $client_name\n[Peer]\nPublicKey = $CLIENT_PUB\nPresharedKey = $PRESHARED_KEY\nAllowedIPs = ${CLIENT_VPN_IP}/32" >>"$wg_conf"
 
         # 7. Create Client Config
-        cat <<EOF > "$client_conf"
+        cat <<EOF >"$client_conf"
 [Interface]
 PrivateKey = $CLIENT_PRIV
 Address = ${CLIENT_VPN_IP}/24
@@ -2955,7 +3000,8 @@ EOF
         wg syncconf wg0 <(wg-quick strip wg0)
     else
         # Fallback if interface is down
-        if command -v systemctl >/dev/null; then systemctl restart wg-quick@wg0 2>/dev/null || true
+        if command -v systemctl >/dev/null; then
+            systemctl restart wg-quick@wg0 2>/dev/null || true
         elif command -v rc-service >/dev/null; then rc-service wg-quick restart 2>/dev/null || true; fi
     fi
 
@@ -2963,26 +3009,26 @@ EOF
     echo -e "\n${RED}========================================================================${NC}"
     echo -e "${YELLOW}           WIREGUARD CLIENT: ${client_name^^}${NC}"
     echo -e "${RED}========================================================================${NC}\n"
-    qrencode -t ansiutf8 < "$client_conf"
+    qrencode -t ansiutf8 <"$client_conf"
     echo -e "\n${GREEN}[✔] Client Configuration File Saved At:${NC} $client_conf"
 }
 
 uninstall_syswarden() {
     echo -e "\n${RED}=== Uninstalling SysWarden (Alpine) ===${NC}"
     log "WARN" "Starting Deep Clean Uninstallation..."
-	
-	# --- WIREGUARD CLEANUP (OPENRC) ---
+
+    # --- WIREGUARD CLEANUP (OPENRC) ---
     if [[ -d "/etc/wireguard" ]] || [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
         log "INFO" "Stopping and removing WireGuard VPN..."
-        
+
         rc-service wg-quick.wg0 stop 2>/dev/null || true
         rc-update del wg-quick.wg0 default 2>/dev/null || true
         rm -f /etc/init.d/wg-quick.wg0
         rm -rf /etc/wireguard
-        
+
         rm -f /etc/sysctl.d/99-syswarden-wireguard.conf
         sysctl -p 2>/dev/null || true
-        
+
         # EMERGENCY SSH RESTORE FOR IPTABLES
         if command -v iptables >/dev/null; then
             while iptables -D INPUT -p tcp --dport "${SSH_PORT:-22}" -j DROP 2>/dev/null; do :; done
@@ -2991,7 +3037,7 @@ uninstall_syswarden() {
     fi
     # ----------------------------------
 
-    if [[ -f "$CONF_FILE" ]]; then 
+    if [[ -f "$CONF_FILE" ]]; then
         # shellcheck source=/dev/null
         source "$CONF_FILE"
     fi
@@ -3002,8 +3048,8 @@ uninstall_syswarden() {
     rc-update del syswarden-reporter default 2>/dev/null || true
     rm -f /etc/init.d/syswarden-reporter /usr/local/bin/syswarden_reporter.py
     rm -rf /var/lib/syswarden
-	
-	log "INFO" "Removing UI Dashboard Service & Audit Tools..."
+
+    log "INFO" "Removing UI Dashboard Service & Audit Tools..."
     rc-service syswarden-ui stop 2>/dev/null || true
     rc-update del syswarden-ui default 2>/dev/null || true
     rm -f /etc/init.d/syswarden-ui /usr/local/bin/syswarden-telemetry.sh /usr/local/bin/syswarden-ui-server.py
@@ -3018,9 +3064,9 @@ uninstall_syswarden() {
 
     # 3. Clean Firewall Rules
     log "INFO" "Cleaning Firewall Rules..."
-    
+
     # Nftables
-    if command -v nft >/dev/null; then 
+    if command -v nft >/dev/null; then
         nft delete table inet syswarden_table 2>/dev/null || true
         # Clean modular config and remove include from main OS config
         rm -f /etc/syswarden/syswarden.nft
@@ -3029,7 +3075,7 @@ uninstall_syswarden() {
             sed -i '/# Added by SysWarden/d' /etc/nftables.nft
         fi
     fi
-    
+
     # Docker (DOCKER-USER chain)
     if command -v iptables >/dev/null && iptables -n -L DOCKER-USER >/dev/null 2>&1; then
         iptables -D DOCKER-USER -m set --match-set "$SET_NAME" src -j DROP 2>/dev/null || true
@@ -3040,9 +3086,9 @@ uninstall_syswarden() {
         iptables -D DOCKER-USER -m set --match-set "$ASN_SET_NAME" src -j LOG --log-prefix "[SysWarden-ASN] " 2>/dev/null || true
         /etc/init.d/iptables save >/dev/null 2>&1 || true
     fi
-    
+
     # IPSet / Iptables (Legacy)
-    if command -v ipset >/dev/null; then 
+    if command -v ipset >/dev/null; then
         ipset destroy "$SET_NAME" 2>/dev/null || true
         ipset destroy "$GEOIP_SET_NAME" 2>/dev/null || true
         ipset destroy "$ASN_SET_NAME" 2>/dev/null || true
@@ -3059,7 +3105,7 @@ uninstall_syswarden() {
         rm -f /etc/fail2ban/jail.local
         rc-service fail2ban restart 2>/dev/null || true
     fi
-    
+
     # Clean custom Fail2ban files
     rm -f /etc/fail2ban/fail2ban.local
     rm -f /etc/fail2ban/action.d/syswarden-docker.conf
@@ -3079,16 +3125,16 @@ uninstall_syswarden() {
             log "INFO" "Keeping Wazuh Agent installed."
         fi
     fi
-	
-	# --- 5.5 OS & SECURITY REVERT ---
+
+    # --- 5.5 OS & SECURITY REVERT ---
     log "INFO" "Reverting OS Hardening & Log Routing..."
-    
+
     # Revert Rsyslog (Alpine uses auth.log natively, so we only purge kern-firewall)
     if [[ -f /etc/rsyslog.conf ]]; then
         sed -i '/kern-firewall\.log/d' /etc/rsyslog.conf
         rc-service rsyslog restart 2>/dev/null || true
     fi
-    
+
     # Remove Immutable flags on user profiles
     if command -v chattr >/dev/null; then
         for user_dir in /home/*; do
@@ -3099,7 +3145,7 @@ uninstall_syswarden() {
             fi
         done
     fi
-    
+
     # Revert SSH TCP Forwarding
     if [[ -f /etc/ssh/sshd_config ]]; then
         sed -i 's/^[[:space:]]*AllowTcpForwarding[[:space:]]*no/#AllowTcpForwarding yes/' /etc/ssh/sshd_config
@@ -3111,7 +3157,7 @@ uninstall_syswarden() {
     rm -rf "$SYSWARDEN_DIR"
     rm -f "$CONF_FILE"
     rm -f "$LOG_FILE"
-    
+
     log "INFO" "Cleanup complete. Environment restored."
     echo -e "${GREEN}Uninstallation complete.${NC}"
     exit 0
@@ -3119,7 +3165,7 @@ uninstall_syswarden() {
 
 setup_wazuh_agent() {
     echo -e "\n${BLUE}=== Step 8: Wazuh Agent Installation (Alpine) ===${NC}"
-    
+
     # --- CI/CD AUTO MODE CHECK ---
     if [[ "${1:-}" == "auto" ]]; then
         response=${SYSWARDEN_ENABLE_WAZUH:-n}
@@ -3128,7 +3174,7 @@ setup_wazuh_agent() {
         read -p "Install Wazuh Agent? (y/N): " response
     fi
     # -----------------------------
-    
+
     if [[ ! "$response" =~ ^[Yy]$ ]]; then
         log "INFO" "Skipping Wazuh Agent installation."
         return
@@ -3142,7 +3188,10 @@ setup_wazuh_agent() {
         log "INFO" "Auto Mode: Wazuh settings loaded via env vars."
     else
         read -p "Enter Wazuh Manager IP: " WAZUH_IP
-        if [[ -z "$WAZUH_IP" ]]; then log "ERROR" "Missing IP. Skipping."; return; fi
+        if [[ -z "$WAZUH_IP" ]]; then
+            log "ERROR" "Missing IP. Skipping."
+            return
+        fi
 
         read -p "Agent Communication Port [Press Enter for '1514']: " W_PORT_COMM
         W_PORT_COMM=${W_PORT_COMM:-1514}
@@ -3152,27 +3201,30 @@ setup_wazuh_agent() {
     fi
 
     # Fail-Safe: Interdire l'installation si l'IP n'est pas fournie en mode auto
-    if [[ -z "$WAZUH_IP" ]]; then log "ERROR" "Missing Wazuh IP. Skipping."; return; fi
+    if [[ -z "$WAZUH_IP" ]]; then
+        log "ERROR" "Missing Wazuh IP. Skipping."
+        return
+    fi
 
     log "INFO" "Whitelisting Wazuh Manager IP ($WAZUH_IP) on Alpine Firewall..."
-    
+
     if [[ "$FIREWALL_BACKEND" == "nftables" ]]; then
-         nft insert rule inet syswarden_table input ip saddr "$WAZUH_IP" accept 2>/dev/null || true
-         # Modular Persistence
-         nft list table inet syswarden_table > /etc/syswarden/syswarden.nft
-         log "INFO" "Nftables rule added for Wazuh Manager."
+        nft insert rule inet syswarden_table input ip saddr "$WAZUH_IP" accept 2>/dev/null || true
+        # Modular Persistence
+        nft list table inet syswarden_table >/etc/syswarden/syswarden.nft
+        log "INFO" "Nftables rule added for Wazuh Manager."
     else
-         if ! iptables -C INPUT -s "$WAZUH_IP" -j ACCEPT 2>/dev/null; then
-             iptables -I INPUT 1 -s "$WAZUH_IP" -j ACCEPT
-             /etc/init.d/iptables save >/dev/null 2>&1 || true
-         fi
+        if ! iptables -C INPUT -s "$WAZUH_IP" -j ACCEPT 2>/dev/null; then
+            iptables -I INPUT 1 -s "$WAZUH_IP" -j ACCEPT
+            /etc/init.d/iptables save >/dev/null 2>&1 || true
+        fi
     fi
 
     log "INFO" "Starting Wazuh Agent installation via Apk..."
-    
+
     # Install directly from Wazuh repo for Alpine
     if apk add -q --allow-untrusted https://packages.wazuh.com/4.x/alpine/v3.14/main/x86_64/wazuh-agent-4.9.0-1.alpine.x86_64.apk; then
-        
+
         # Inject Custom Settings into OSSEC Config
         if [[ -f /var/ossec/etc/ossec.conf ]]; then
             sed -i "s/<address>.*<\/address>/<address>$WAZUH_IP<\/address>/" /var/ossec/etc/ossec.conf
@@ -3181,9 +3233,9 @@ setup_wazuh_agent() {
 
         rc-update add wazuh-agent default >/dev/null 2>&1
         rc-service wazuh-agent restart >/dev/null 2>&1
-        
-        echo "WAZUH_IP='$WAZUH_IP'" >> "$CONF_FILE"
-        echo "WAZUH_COMM_PORT='$W_PORT_COMM'" >> "$CONF_FILE"
+
+        echo "WAZUH_IP='$WAZUH_IP'" >>"$CONF_FILE"
+        echo "WAZUH_COMM_PORT='$W_PORT_COMM'" >>"$CONF_FILE"
         log "INFO" "Wazuh Agent installed and started."
     else
         log "ERROR" "Failed to install Wazuh Agent package."
@@ -3195,12 +3247,12 @@ setup_wazuh_agent() {
 # ==============================================================================
 function setup_telemetry_backend() {
     log "INFO" "Installation of the advanced telemetry engine (Backend)..."
-    
+
     local BIN_PATH="/usr/local/bin/syswarden-telemetry.sh"
     local UI_DIR="/etc/syswarden/ui"
-    
+
     # 1. Writing the Telemetry Bash script
-    cat << 'EOF' > "$BIN_PATH"
+    cat <<'EOF' >"$BIN_PATH"
 #!/bin/bash
 set -euo pipefail
 IFS=$'\n\t'
@@ -3320,12 +3372,15 @@ EOF
 
     # 2. Make executable
     chmod +x "$BIN_PATH"
-    
+
     # 3. Injection into CRON tasks (Execution every minute)
     if ! crontab -l 2>/dev/null | grep -q "$BIN_PATH"; then
-        (crontab -l 2>/dev/null || true; echo "* * * * * $BIN_PATH >/dev/null 2>&1") | crontab -
+        (
+            crontab -l 2>/dev/null || true
+            echo "* * * * * $BIN_PATH >/dev/null 2>&1"
+        ) | crontab -
     fi
-    
+
     # 4. First immediate run to generate data.json before the UI starts
     if ! "$BIN_PATH"; then
         log "WARN" "Initial telemetry run failed, but script will continue."
@@ -3337,22 +3392,22 @@ EOF
 # ==============================================================================
 function generate_dashboard() {
     log "INFO" "Generating the Serverless Dashboard UI (Expanded v9.94)..."
-    
+
     local UI_DIR="/etc/syswarden/ui"
     mkdir -p "$UI_DIR"
     # --- FIX: Force read/execute access for the Python web server ---
     chmod 755 "$UI_DIR"
-	
-	# --- DYNAMIC BIND IP ---
+
+    # --- DYNAMIC BIND IP ---
     local UI_BIND_IP="127.0.0.1" # Default to Localhost if no VPN
     if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
         local SUBNET_BASE
         SUBNET_BASE=$(echo "$WG_SUBNET" | cut -d'.' -f1,2,3)
         UI_BIND_IP="${SUBNET_BASE}.1"
     fi
-    
+
     # 1. Generating the HTML file
-    cat << 'EOF' > "$UI_DIR/index.html"
+    cat <<'EOF' >"$UI_DIR/index.html"
 <!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
@@ -3724,7 +3779,7 @@ EOF
     # Replaces the default python -m http.server to inject strict security headers
     # and prevent Server version disclosure (Mitigates F11 and F17).
     local UI_SERVER_BIN="/usr/local/bin/syswarden-ui-server.py"
-    cat << 'EOF' > "$UI_SERVER_BIN"
+    cat <<'EOF' >"$UI_SERVER_BIN"
 #!/usr/bin/env python3
 import http.server
 import socketserver
@@ -3758,7 +3813,7 @@ EOF
 
     # 2. Creation of the Systemd/OpenRC service according to the OS
     if command -v systemctl >/dev/null; then
-        cat << EOF > /etc/systemd/system/syswarden-ui.service
+        cat <<EOF >/etc/systemd/system/syswarden-ui.service
 [Unit]
 Description=SysWarden Secure Web UI
 After=network.target
@@ -3776,7 +3831,7 @@ EOF
         systemctl daemon-reload
         systemctl enable --now syswarden-ui >/dev/null 2>&1
     else
-        cat << EOF > /etc/init.d/syswarden-ui
+        cat <<EOF >/etc/init.d/syswarden-ui
 #!/sbin/openrc-run
 
 name="syswarden-ui"
@@ -3796,7 +3851,7 @@ EOF
         rc-update add syswarden-ui default >/dev/null 2>&1
         rc-service syswarden-ui restart >/dev/null 2>&1 || true
     fi
-    
+
     log "INFO" "Dashboard UI enabled at $UI_BIND_IP:9999"
 }
 
@@ -3814,23 +3869,23 @@ whitelist_ip() {
     # --- FIX: SAFE DYNAMIC WHITELISTING (STATE MACHINE) ---
     # 1. Add IP to the Single Source of Truth (if not already present)
     if ! grep -q "^${WL_IP}$" "$WHITELIST_FILE" 2>/dev/null; then
-        echo "$WL_IP" >> "$WHITELIST_FILE"
+        echo "$WL_IP" >>"$WHITELIST_FILE"
         log "INFO" "IP $WL_IP securely saved to $WHITELIST_FILE."
     else
         log "INFO" "IP $WL_IP is already in the whitelist file."
     fi
 
     log "INFO" "Rebuilding firewall framework to safely integrate the new IP..."
-    
+
     # 2. Force loading config to ensure core variables (SSH_PORT, USE_WIREGUARD) are in RAM
     if [[ -f "$CONF_FILE" ]]; then
         # shellcheck source=/dev/null
         source "$CONF_FILE"
     fi
-    
+
     # 3. Trigger the orchestrator to rebuild rules with the strict hierarchy
     apply_firewall_rules
-    
+
     log "SUCCESS" "IP $WL_IP safely whitelisted. Strict firewall hierarchy preserved."
     # ------------------------------------------------------
 }
@@ -3844,12 +3899,12 @@ blocklist_ip() {
         log "ERROR" "Invalid IP format."
         return
     fi
-    
+
     # --- LOCAL PERSISTENCE (SINGLE SOURCE OF TRUTH) ---
     mkdir -p "$SYSWARDEN_DIR"
     touch "$BLOCKLIST_FILE"
     if ! grep -q "^${BL_IP}$" "$BLOCKLIST_FILE" 2>/dev/null; then
-        echo "$BL_IP" >> "$BLOCKLIST_FILE"
+        echo "$BL_IP" >>"$BLOCKLIST_FILE"
         log "INFO" "IP $BL_IP securely saved to $BLOCKLIST_FILE."
     else
         log "INFO" "IP $BL_IP is already in the blocklist file."
@@ -3860,23 +3915,23 @@ blocklist_ip() {
 
     # --- FIX: SAFE DYNAMIC BLOCKLISTING (STATE MACHINE) ---
     log "INFO" "Rebuilding firewall framework to safely integrate the new IP..."
-    
+
     # 1. Force loading config to ensure core variables (SSH_PORT, USE_WIREGUARD) are in RAM
     if [[ -f "$CONF_FILE" ]]; then
         # shellcheck source=/dev/null
         source "$CONF_FILE"
     fi
-    
+
     # 2. Trigger the orchestrator to rebuild rules and load the IP into active sets
     apply_firewall_rules
-    
+
     log "SUCCESS" "IP $BL_IP safely blocklisted. Strict firewall hierarchy preserved."
     # ------------------------------------------------------
 }
 
 protect_docker_jail() {
     echo -e "\n${BLUE}=== SysWarden Docker Jail Protector ===${NC}"
-    
+
     local jail_file="/etc/fail2ban/jail.local"
     if [[ ! -f "$jail_file" ]]; then
         log "ERROR" "Fail2ban configuration ($jail_file) not found."
@@ -3884,7 +3939,8 @@ protect_docker_jail() {
     fi
 
     if command -v fail2ban-client >/dev/null && rc-service fail2ban status 2>/dev/null | grep -q "started"; then
-        local active_jails; active_jails=$(fail2ban-client status 2>/dev/null | grep "Jail list" | sed 's/.*Jail list://g' || true)
+        local active_jails
+        active_jails=$(fail2ban-client status 2>/dev/null | grep "Jail list" | sed 's/.*Jail list://g' || true)
         echo -e "Currently active Jails: ${YELLOW}${active_jails}${NC}"
     fi
 
@@ -3903,15 +3959,16 @@ protect_docker_jail() {
 
     log "INFO" "Configuring jail [${jail_name}] to use Docker banaction..."
 
-    local temp_file; temp_file=$(mktemp)
+    local temp_file
+    temp_file=$(mktemp)
     local in_target_jail=0
 
     while IFS= read -r line || [[ -n "$line" ]]; do
         if [[ "$line" =~ ^\[.*\]$ ]]; then
             if [[ "$line" == "[${jail_name}]" ]]; then
                 in_target_jail=1
-                echo "$line" >> "$temp_file"
-                echo "banaction = syswarden-docker" >> "$temp_file"
+                echo "$line" >>"$temp_file"
+                echo "banaction = syswarden-docker" >>"$temp_file"
                 continue
             else
                 in_target_jail=0
@@ -3922,8 +3979,8 @@ protect_docker_jail() {
             continue
         fi
 
-        echo "$line" >> "$temp_file"
-    done < "$jail_file"
+        echo "$line" >>"$temp_file"
+    done <"$jail_file"
 
     mv "$temp_file" "$jail_file"
     chmod 644 "$jail_file"
@@ -3939,7 +3996,7 @@ check_upgrade() {
 
     local api_url="https://api.github.com/repos/duggytuxy/syswarden/releases/latest"
     local response
-    
+
     response=$(curl -sS --connect-timeout 5 "$api_url") || {
         log "ERROR" "Failed to connect to GitHub API."
         exit 1
@@ -3947,7 +4004,7 @@ check_upgrade() {
 
     local download_url
     download_url=$(echo "$response" | grep -o '"browser_download_url": "[^"]*/install-syswarden-alpine\.sh"' | head -n 1 | cut -d'"' -f4)
-    
+
     local hash_url
     hash_url=$(echo "$response" | grep -o '"browser_download_url": "[^"]*/install-syswarden-alpine\.sh\.sha256"' | head -n 1 | cut -d'"' -f4)
 
@@ -3966,15 +4023,15 @@ check_upgrade() {
         echo -e "${GREEN}You are already using the latest version of SysWarden!${NC}"
     else
         echo -e "${YELLOW}A new Alpine version ($latest_version) is available!${NC}"
-        
+
         # --- SECURITY FIX: MITM PROTECTION & SECURE UPDATE ---
         echo -e "${YELLOW}Downloading and verifying update securely...${NC}"
-        
+
         wget --https-only --secure-protocol=TLSv1_2 --max-redirect=2 --no-hsts -qO "$TMP_DIR/install-syswarden-alpine.sh" "$download_url"
         wget --https-only --secure-protocol=TLSv1_2 --max-redirect=2 --no-hsts -qO "$TMP_DIR/install-syswarden-alpine.sh.sha256" "$hash_url"
-        
+
         cd "$TMP_DIR" || exit 1
-        
+
         if ! sha256sum -c install-syswarden-alpine.sh.sha256 --status; then
             echo -e "${RED}[ CRITICAL ALERT ]${NC}"
             echo -e "${RED}The downloaded script failed cryptographic validation!${NC}"
@@ -3983,12 +4040,12 @@ check_upgrade() {
             rm -f "$TMP_DIR/install-syswarden-alpine.sh*"
             exit 1
         fi
-        
+
         echo -e "${GREEN}Checksum validated successfully. Applying update...${NC}"
-        
+
         mv "$TMP_DIR/install-syswarden-alpine.sh" "/root/install-syswarden-alpine.sh"
         chmod 700 "/root/install-syswarden-alpine.sh"
-        
+
         echo -e "${GREEN}Update secured and installed in /root/install-syswarden-alpine.sh${NC}"
         echo -e "Please run ${YELLOW}./install-syswarden-alpine.sh update${NC} to apply the new orchestrator rules."
         # -----------------------------------------------------
@@ -4002,8 +4059,9 @@ show_alerts_dashboard() {
 
     while true; do
         clear
-        local NOW; NOW=$(date "+%H:%M:%S")
-        
+        local NOW
+        NOW=$(date "+%H:%M:%S")
+
         echo -e "${BLUE}====================================================================================================${NC}"
         echo -e "${BLUE}   SysWarden Live Attack Dashboard (Last Update: $NOW)        ${NC}"
         echo -e "${BLUE}====================================================================================================${NC}"
@@ -4016,7 +4074,7 @@ show_alerts_dashboard() {
 
         # 1. FAIL2BAN ENTRIES
         if [[ -f "/var/log/fail2ban.log" ]]; then
-             { grep " Ban " "/var/log/fail2ban.log" || true; } | tail -n 10 | while read -r line; do
+            { grep " Ban " "/var/log/fail2ban.log" || true; } | tail -n 10 | while read -r line; do
                 if [[ $line =~ \[([a-zA-Z0-9_-]+)\][[:space:]]+Ban[[:space:]]+([0-9.]+) ]]; then
                     jail="${BASH_REMATCH[1]}"
                     ip="${BASH_REMATCH[2]}"
@@ -4029,8 +4087,10 @@ show_alerts_dashboard() {
 
         # 2. FIREWALL ENTRIES (Direct from Kernel Buffer)
         # Calculate boot time to translate kernel uptime to human-readable date
-        local uptime_sec; uptime_sec=$(cut -d. -f1 /proc/uptime)
-        local now_sec; now_sec=$(date +%s)
+        local uptime_sec
+        uptime_sec=$(cut -d. -f1 /proc/uptime)
+        local now_sec
+        now_sec=$(date +%s)
         local boot_sec=$((now_sec - uptime_sec))
 
         { dmesg | grep -E "\[SysWarden-BLOCK\]|\[SysWarden-GEO\]|\[SysWarden-ASN\]" | tail -n 20; } | while read -r line; do
@@ -4038,10 +4098,10 @@ show_alerts_dashboard() {
                 ip="${BASH_REMATCH[1]}"
                 rule="Unknown"
                 if [[ $line =~ (SysWarden-[A-Z]+) ]]; then rule="${BASH_REMATCH[1]}"; fi
-                
+
                 port="Global"
                 if [[ $line =~ DPT=([0-9]+) ]]; then port="TCP/${BASH_REMATCH[1]}"; fi
-                
+
                 # Extract Kernel Timestamp and convert to YYYY-MM-DD HH:MM:SS format
                 dtime="Kernel-TS"
                 if [[ $line =~ ^\[[[:space:]]*([0-9]+)\.[0-9]+\] ]]; then
@@ -4049,14 +4109,14 @@ show_alerts_dashboard() {
                     local event_sec=$((boot_sec + kernel_sec))
                     dtime=$(date -d "@$event_sec" "+%Y-%m-%d %H:%M:%S")
                 fi
-                
+
                 printf "%-19s | %-10s | %-16s | %-20s | %-12s | %-8s\n" "$dtime" "Firewall" "$ip" "$rule" "$port" "BLOCK"
             fi
-         done
-                
+        done
+
         echo "----------------------------------------------------------------------------------------------------"
         echo -e "Press [ESC] to Quit."
-        
+
         read -t 10 -n 1 -s -r key || true
         if [[ $key == $'\e' ]]; then
             break
@@ -4075,7 +4135,7 @@ MODE="${1:-install}"
 # --- HEADLESS / UNATTENDED INSTALLATION PARSER ---
 if [[ -f "${1:-}" ]]; then
     echo -e "${GREEN}>>> Unattended configuration file detected: $1${NC}"
-    
+
     # --- SECURITY FIX: SECURE AUTO-CONF FILE ---
     chmod 600 "$1"
     # -------------------------------------------
@@ -4084,17 +4144,17 @@ if [[ -f "${1:-}" ]]; then
         # Ignore comments and empty lines
         [[ "$key" =~ ^[[:space:]]*# ]] && continue
         [[ -z "$key" ]] && continue
-        
+
         # Clean up the key and value (remove whitespaces and quotes)
         key=$(echo "$key" | xargs)
         val=$(echo "$val" | xargs | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
-        
+
         # STRICT SECURITY: Only export variables starting with SYSWARDEN_
         if [[ "$key" =~ ^SYSWARDEN_[A-Z0-9_]+$ ]]; then
             export "$key"="$val"
         fi
-    done < "$1"
-    
+    done <"$1"
+
     MODE="auto"
 elif [[ "$MODE" == "--auto" ]]; then
     MODE="auto"
@@ -4179,7 +4239,7 @@ fi
 
 if [[ "$MODE" == "uninstall" ]]; then
     check_root
-	detect_os_backend
+    detect_os_backend
     uninstall_syswarden
 fi
 
@@ -4200,7 +4260,7 @@ auto_whitelist_admin
 if [[ "$MODE" != "update" ]]; then
     install_dependencies
     define_ssh_port "$MODE"
-	define_wireguard "$MODE"
+    define_wireguard "$MODE"
     define_docker_integration "$MODE"
     define_geoblocking "$MODE"
     define_asnblocking "$MODE"
@@ -4221,7 +4281,7 @@ select_mirror "$MODE"
 download_list
 
 # --- FIX 2: THE COLD BOOT INJECTION (FRESH INSTALL ONLY) ---
-# Initialize base chains/sets before downloading massive lists to prevent 
+# Initialize base chains/sets before downloading massive lists to prevent
 # service dependency crashes (like Fail2ban starting too early).
 if [[ "$MODE" != "update" ]]; then
     apply_firewall_rules
@@ -4232,7 +4292,7 @@ download_asn
 # --------------------------------------
 
 # --- FIX 3: THE POST-DOWNLOAD RELOAD (INSTALL & UPDATE) ---
-# Now that massive lists are downloaded/updated on disk, we ALWAYS reload 
+# Now that massive lists are downloaded/updated on disk, we ALWAYS reload
 # the firewall to inject the freshest GeoIP, ASN, and Blocklist data.
 log "INFO" "Applying massive downloaded lists to active firewall..."
 apply_firewall_rules
@@ -4250,12 +4310,12 @@ if [[ "$MODE" != "update" ]]; then
     setup_abuse_reporting "$MODE"
     setup_wazuh_agent "$MODE"
     setup_cron_autoupdate "$MODE"
-	
-	# --- DASHBOARD MODULE V9.40 ---
-    setup_telemetry_backend  # Creates the script, the cron, and generates the first JSON
-    generate_dashboard       # Creates the HTML UI and launches the Python web server
+
+    # --- DASHBOARD MODULE V9.40 ---
+    setup_telemetry_backend # Creates the script, the cron, and generates the first JSON
+    generate_dashboard      # Creates the HTML UI and launches the Python web server
     # ------------------------------
-    
+
     echo -e "\n${GREEN}INSTALLATION SUCCESSFUL${NC}"
     echo -e " -> OS Detected: Alpine Linux (OpenRC)"
     echo -e " -> List loaded: $LIST_TYPE"
@@ -4265,6 +4325,6 @@ if [[ "$MODE" != "update" ]]; then
         echo -e " -> Mode: Interactive"
     fi
     echo -e " -> Protection: Active"
-    
+
     display_wireguard_qr
 fi
