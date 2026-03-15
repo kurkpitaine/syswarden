@@ -315,7 +315,7 @@ or
 
 ### 4. Serverless Telemetry Dashboard Access
 
-SysWarden v9.30 includes a fully decoupled, real-time Telemetry Dashboard. For maximum security, the dashboard relies on a Python HTTP daemon that explicitly avoids listening on public network interfaces. Access depends on your WireGuard configuration:
+SysWarden includes a fully decoupled, real-time Telemetry Dashboard. For maximum security, the dashboard relies on a Python HTTP daemon that explicitly avoids listening on public network interfaces. Access depends on your WireGuard configuration:
 
 **Scenario A: WireGuard VPN Enabled (Recommended)**
 If you chose to deploy the stealth management VPN during installation, the dashboard securely binds to the internal VPN subnet gateway.
