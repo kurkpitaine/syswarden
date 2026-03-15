@@ -433,9 +433,11 @@ Deploying a secure framework requires continuous validation. SysWarden ships wit
 
 - **OS Hardening & Privilege Separation**: Validates crontab lockdowns (`/etc/cron.allow`), ensures standard users are removed from privileged groups (`wheel`, `sudo`, `adm`), and checks for immutable flags (`+i`) on user profiles to prevent SSH backdoors.
 - **Log Routing & Anti-Injection**: Confirms the active status of Rsyslog and verifies the creation and strict permissions (`0600`) of isolated Netfilter and Auth logs.
-- **Kernel Shield & Threat Intel**: Validates the presence of the active global blocklist payload and verifies that SysWarden rules are correctly prioritized in the detected backend (Nftables, Firewalld, UFW, or Iptables).
+- **Kernel Shield & Threat Intel**: Validates the presence of the active global blocklist payload and verifies that SysWarden rules are correctly prioritized in the detected backend (Nftables, Firewalld, UFW, or Iptables). Features context-aware configuration parsing to accurately validate GeoIP, manual ASN routing, and Spamhaus defenses without penalizing intentionally bypassed modules.
 - **Zero Trust Fail2ban Engine**: Audits the Fail2ban IPC socket, checks for the absence of conflicting OS default configurations, verifies strict regex anchoring (`^%(__prefix_line)s`) to prevent log spoofing, and validates dynamic Infrastructure Whitelisting (Anti-Self-DoS).
 - **Telemetry Sandboxing**: Ensures the UI Python wrapper is deployed with strict HTTP security headers and that telemetry payload data (`data.json`) is strictly restricted to the `nobody` user.
+- **Zero Trust Remote Access & Cloaking**: Independently validates the strict "Priority Guillotine" (Global SSH Drop), verifies WireGuard gateway readiness, and natively authenticates Day-2 dynamic SSH bypasses (`allow-ssh`) as legitimate infrastructure exceptions.
+- **Deterministic Scoring Engine**: Utilizes flattened kernel-state buffer parsing to eliminate multi-line tearing, ensuring 100% deterministic, flake-free execution and mathematically pure compliance percentages.
 
 > **SIEM Integration**: Audit results are displayed in the console and simultaneously written to a secure, standardized log file at `/var/log/syswarden-audit.log` for easy ingestion by monitoring platforms.
 
