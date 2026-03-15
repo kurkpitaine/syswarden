@@ -334,6 +334,7 @@ ssh -L 9999:127.0.0.1:9999 your_user@your_server_ip -p YOUR_SSH_PORT
 or
 
 ssh -i ~/.ssh/your_id -L 9999:127.0.0.1:9999 root@your_server_ip -p YOUR_SSH_PORT
+```
 
 ### 5. CLI Orchestration Commands
 
