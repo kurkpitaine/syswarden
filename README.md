@@ -326,9 +326,14 @@ If you chose to deploy the stealth management VPN during installation, the dashb
 **Scenario B: WireGuard VPN Disabled**
 If you opted out of the VPN, the dashboard strictly binds to `127.0.0.1` (localhost) to prevent public exposure. You must use an SSH tunnel to access it.
 
+> **Important:** Due to the strict SSH Priority Guillotine, your SSH port is dropped globally by default. You must explicitly authorize your public IP address before attempting to tunnel. First, grant yourself Day-2 access via the management CLI: `syswarden-mng allow-ssh <YOUR_IP>`.
+
 ```bash
 ssh -L 9999:127.0.0.1:9999 your_user@your_server_ip -p YOUR_SSH_PORT
-```
+
+or
+
+ssh -i ~/.ssh/your_id -L 9999:127.0.0.1:9999 root@your_server_ip -p YOUR_SSH_PORT
 
 ### 5. CLI Orchestration Commands
 
