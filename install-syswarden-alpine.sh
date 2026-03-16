@@ -42,7 +42,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v1.08"
+VERSION="v1.09"
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
 BLOCKLIST_FILE="$SYSWARDEN_DIR/blocklist.txt"
@@ -905,6 +905,43 @@ EOF
             echo 'include "/etc/syswarden/syswarden.nft"' >>"$MAIN_NFT_CONF"
             chmod 755 "$MAIN_NFT_CONF"
         fi
+
+        # --- NEW DEVSECOPS FIX: ALPINE NATIVE FIREWALL AUTO-BYPASS ---
+        # Alpine's default inet filter table drops everything.
+        # We dynamically inject a drop-in file to open detected essential ports.
+        log "INFO" "Configuring Native OS Firewall Bypass for active services..."
+        mkdir -p /etc/nftables.d
+
+        local OS_BYPASS_FILE="/etc/nftables.d/syswarden-os-bypass.nft"
+        echo "table inet filter {" >"$OS_BYPASS_FILE"
+        echo "    chain input {" >>"$OS_BYPASS_FILE"
+
+        # 1. Always guarantee SSH is allowed in the native table
+        echo "        tcp dport ${SSH_PORT:-22} accept comment \"SysWarden: Auto-allow SSH\"" >>"$OS_BYPASS_FILE"
+
+        # 2. Dynamic Web Server Auto-Detection (Nginx, Apache)
+        if command -v nginx >/dev/null 2>&1 || command -v apache2 >/dev/null 2>&1 || command -v httpd >/dev/null 2>&1; then
+            echo "        tcp dport { 80, 443 } accept comment \"SysWarden: Auto-allow Web Services\"" >>"$OS_BYPASS_FILE"
+            log "INFO" "OS Bypass: Automatically opened Web Ports (80, 443) in Alpine's native firewall."
+        fi
+
+        # 3. Extra Management Panels (Optional - Proxmox, Cockpit, etc.)
+        if ss -tulpn 2>/dev/null | grep -qE ':(8080|8443|9090|8006|3000)\b'; then
+            local extra_ports=""
+            for p in 8080 8443 9090 8006 3000; do
+                if ss -tulpn 2>/dev/null | grep -q ":${p}\b"; then extra_ports="${extra_ports}${p}, "; fi
+            done
+            extra_ports=$(echo "$extra_ports" | sed 's/, $//')
+            echo "        tcp dport { $extra_ports } accept comment \"SysWarden: Auto-allow Admin Panels\"" >>"$OS_BYPASS_FILE"
+            log "INFO" "OS Bypass: Automatically opened Custom Panels ($extra_ports)."
+        fi
+
+        echo "    }" >>"$OS_BYPASS_FILE"
+        echo "}" >>"$OS_BYPASS_FILE"
+
+        # Apply the bypass directly to the live kernel
+        nft -f "$OS_BYPASS_FILE" 2>/dev/null || true
+        # -------------------------------------------------------------
 
     else
         # Fallback IPSET / IPTABLES
@@ -3068,6 +3105,7 @@ uninstall_syswarden() {
         nft delete table inet syswarden_table 2>/dev/null || true
         # Clean modular config and remove include from main OS config
         rm -f /etc/syswarden/syswarden.nft
+        rm -f /etc/nftables.d/syswarden-os-bypass.nft # <--- AJOUTE CETTE LIGNE ICI
         if [[ -f "/etc/nftables.nft" ]]; then
             sed -i '\|include "/etc/syswarden/syswarden.nft"|d' /etc/nftables.nft
             sed -i '/# Added by SysWarden/d' /etc/nftables.nft
@@ -3389,7 +3427,7 @@ EOF
 # SYSWARDEN V9.40 - UI DASHBOARD GENERATION (EXPANDED REGISTRY)
 # ==============================================================================
 function generate_dashboard() {
-    log "INFO" "Generating the Serverless Dashboard UI (Expanded v1.08)..."
+    log "INFO" "Generating the Serverless Dashboard UI (Expanded v1.09)..."
 
     local UI_DIR="/etc/syswarden/ui"
     mkdir -p "$UI_DIR"
@@ -3454,7 +3492,7 @@ function generate_dashboard() {
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center gap-3">
                     <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.7)]" id="status-indicator"></div>
-                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v1.08</span></h1>
+                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v1.09</span></h1>
                 </div>
                 
                 <div class="flex items-center gap-2 bg-gray-100 dark:bg-dark-900 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
