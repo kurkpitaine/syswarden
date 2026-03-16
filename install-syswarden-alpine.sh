@@ -42,7 +42,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v1.07"
+VERSION="v1.08"
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
 BLOCKLIST_FILE="$SYSWARDEN_DIR/blocklist.txt"
@@ -812,17 +812,19 @@ add chain inet syswarden_table input { type filter hook input priority filter - 
 add rule inet syswarden_table input ct state established,related accept
 EOF
 
-        if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
-            echo "add rule inet syswarden_table input udp dport ${WG_PORT:-51820} accept" >>"$TMP_DIR/syswarden.nft"
-            echo "add rule inet syswarden_table input iifname { \"wg0\", \"lo\" } tcp dport ${SSH_PORT:-22} accept" >>"$TMP_DIR/syswarden.nft"
-            echo "add rule inet syswarden_table input tcp dport ${SSH_PORT:-22} log prefix \"[SysWarden-SSH-DROP] \" drop" >>"$TMP_DIR/syswarden.nft"
-        fi
-
+        # --- FIX DEVSECOPS: WHITELIST MUST BE EVALUATED BEFORE ANY DROPS ---
         if [[ -s "$WHITELIST_FILE" ]]; then
             while IFS= read -r wl_ip; do
                 [[ -z "$wl_ip" ]] && continue
                 echo "add rule inet syswarden_table input ip saddr $wl_ip accept" >>"$TMP_DIR/syswarden.nft"
             done <"$WHITELIST_FILE"
+        fi
+        # ------------------------------------------------------------------
+
+        if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
+            echo "add rule inet syswarden_table input udp dport ${WG_PORT:-51820} accept" >>"$TMP_DIR/syswarden.nft"
+            echo "add rule inet syswarden_table input iifname { \"wg0\", \"lo\" } tcp dport ${SSH_PORT:-22} accept" >>"$TMP_DIR/syswarden.nft"
+            echo "add rule inet syswarden_table input tcp dport ${SSH_PORT:-22} log prefix \"[SysWarden-SSH-DROP] \" drop" >>"$TMP_DIR/syswarden.nft"
         fi
 
         if [[ "${GEOBLOCK_COUNTRIES:-none}" != "none" ]] && [[ -s "$GEOIP_FILE" ]]; then
@@ -954,23 +956,6 @@ EOF
             fi
         fi
 
-        # --- FIX: RE-INJECT WHITELIST ACCEPT RULES ---
-        # Inserted BEFORE WireGuard Cloaking so that WG rules push this down and stay on top.
-        if [[ -s "$WHITELIST_FILE" ]]; then
-            while IFS= read -r wl_ip; do
-                [[ -z "$wl_ip" ]] && continue
-                if ! iptables -C INPUT -s "$wl_ip" -j ACCEPT 2>/dev/null; then
-                    iptables -I INPUT 1 -s "$wl_ip" -j ACCEPT
-                fi
-            done <"$WHITELIST_FILE"
-        fi
-        # ---------------------------------------------
-
-        # --- ESSENTIAL CONNECTION TRACKING (ALWAYS ACTIVE) ---
-        while iptables -D INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null; do :; done
-        iptables -I INPUT 1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-        # -----------------------------------------------------
-
         # --- STRICT WIREGUARD SSH CLOAKING ---
         if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
             # Clean existing WG rules first to prevent duplicates
@@ -979,13 +964,26 @@ EOF
             while iptables -D INPUT -i wg0 -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT 2>/dev/null; do :; done
             while iptables -D INPUT -i lo -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT 2>/dev/null; do :; done
 
-            # Insert top-priority rules (inserted in reverse order)
-            iptables -I INPUT 2 -p tcp --dport "${SSH_PORT:-22}" -j DROP
-            iptables -I INPUT 2 -i wg0 -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT
-            iptables -I INPUT 2 -i lo -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT
-            iptables -I INPUT 2 -p udp --dport "${WG_PORT:-51820}" -j ACCEPT
+            # Insert top-priority rules (inserted in reverse order so they stack correctly)
+            iptables -I INPUT 1 -p tcp --dport "${SSH_PORT:-22}" -j DROP
+            iptables -I INPUT 1 -i wg0 -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT
+            iptables -I INPUT 1 -i lo -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT
+            iptables -I INPUT 1 -p udp --dport "${WG_PORT:-51820}" -j ACCEPT
         fi
-        # -------------------------------------
+
+        # --- FIX DEVSECOPS: STRICT WHITELIST EVALUATION ---
+        if [[ -s "$WHITELIST_FILE" ]]; then
+            while IFS= read -r wl_ip; do
+                [[ -z "$wl_ip" ]] && continue
+                if ! iptables -C INPUT -s "$wl_ip" -j ACCEPT 2>/dev/null; then
+                    iptables -I INPUT 1 -s "$wl_ip" -j ACCEPT
+                fi
+            done <"$WHITELIST_FILE"
+        fi
+
+        # --- ESSENTIAL CONNECTION TRACKING (ALWAYS ACTIVE AT TOP) ---
+        while iptables -D INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null; do :; done
+        iptables -I INPUT 1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
         # Save IPtables persistence for Alpine / OpenRC
         /etc/init.d/iptables save >/dev/null 2>&1 || true
@@ -3391,7 +3389,7 @@ EOF
 # SYSWARDEN V9.40 - UI DASHBOARD GENERATION (EXPANDED REGISTRY)
 # ==============================================================================
 function generate_dashboard() {
-    log "INFO" "Generating the Serverless Dashboard UI (Expanded v1.07)..."
+    log "INFO" "Generating the Serverless Dashboard UI (Expanded v1.08)..."
 
     local UI_DIR="/etc/syswarden/ui"
     mkdir -p "$UI_DIR"
@@ -3456,7 +3454,7 @@ function generate_dashboard() {
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center gap-3">
                     <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.7)]" id="status-indicator"></div>
-                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v1.07</span></h1>
+                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v1.08</span></h1>
                 </div>
                 
                 <div class="flex items-center gap-2 bg-gray-100 dark:bg-dark-900 p-1 rounded-lg border border-gray-200 dark:border-gray-700">

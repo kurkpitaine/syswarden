@@ -33,7 +33,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v1.07"
+VERSION="v1.08"
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
 BLOCKLIST_FILE="$SYSWARDEN_DIR/blocklist.txt"
@@ -968,17 +968,20 @@ EOF
         ct state established,related accept
 EOF
 
-        if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
-            echo "        udp dport ${WG_PORT:-51820} accept" >>"$TMP_DIR/syswarden.nft"
-            echo "        iifname { \"wg0\", \"lo\" } tcp dport ${SSH_PORT:-22} accept" >>"$TMP_DIR/syswarden.nft"
-            echo "        tcp dport ${SSH_PORT:-22} log prefix \"[SysWarden-SSH-DROP] \" drop" >>"$TMP_DIR/syswarden.nft"
-        fi
-
+        # --- FIX DEVSECOPS: WHITELIST MUST BE EVALUATED BEFORE ANY DROPS ---
+        # Evaluated immediately after established connections to prevent admin lockout.
         if [[ -s "$WHITELIST_FILE" ]]; then
             while IFS= read -r wl_ip; do
                 [[ -z "$wl_ip" ]] && continue
                 echo "        ip saddr $wl_ip accept" >>"$TMP_DIR/syswarden.nft"
             done <"$WHITELIST_FILE"
+        fi
+        # -------------------------------------------------------------------
+
+        if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
+            echo "        udp dport ${WG_PORT:-51820} accept" >>"$TMP_DIR/syswarden.nft"
+            echo "        iifname { \"wg0\", \"lo\" } tcp dport ${SSH_PORT:-22} accept" >>"$TMP_DIR/syswarden.nft"
+            echo "        tcp dport ${SSH_PORT:-22} log prefix \"[SysWarden-SSH-DROP] \" drop" >>"$TMP_DIR/syswarden.nft"
         fi
 
         if [[ "${GEOBLOCK_COUNTRIES:-none}" != "none" ]] && [[ -s "$GEOIP_FILE" ]]; then
@@ -1103,7 +1106,7 @@ EOF
             # 3. Allow WireGuard UDP port for tunnel establishment
             firewall-cmd --permanent --add-port="${WG_PORT:-51820}/udp" >/dev/null 2>&1 || true
 
-            # --- STRICT ZERO TRUST HIERARCHY (v1.07) - DEBIAN PARITY) ---
+            # --- STRICT ZERO TRUST HIERARCHY (v1.08) - DEBIAN PARITY) ---
 
             # Priority -1000: Highest priority. Allow SSH & Dashboard strictly from VPN.
             firewall-cmd --permanent --add-rich-rule="rule priority='-1000' family='ipv4' source address='${WG_SUBNET}' port port='${SSH_PORT:-22}' protocol='tcp' accept" >/dev/null 2>&1 || true
@@ -1168,17 +1171,28 @@ EOF
         # 3. Fast reload to register empty sets
         firewall-cmd --reload >/dev/null 2>&1 || true
 
-        # --- FIX: RE-INJECT WHITELIST ACCEPT RULES ---
+        # --- FIX: STRICT WHITELIST SYNCHRONIZATION (ANTI-GHOST RULES) ---
+        log "INFO" "Synchronizing Whitelist with Firewalld memory..."
+
+        # 1. Hunt and destroy ALL existing priority rules in permanent memory
+        while IFS= read -r rule; do
+            if [[ "$rule" == *"priority=\"-100\""* ]] || [[ "$rule" == *"priority=\"-32000\""* ]]; then
+                firewall-cmd --permanent --remove-rich-rule="$rule" >/dev/null 2>&1 || true
+            fi
+        done < <(firewall-cmd --permanent --list-rich-rules 2>/dev/null || true)
+
+        # 2. Re-inject ONLY the IPs that are currently in the text file
         if [[ -s "$WHITELIST_FILE" ]]; then
             while IFS= read -r wl_ip; do
                 [[ -z "$wl_ip" ]] && continue
-                # 1. Clean up the old unprioritized rule if it exists
+                # Clean up any old unprioritized legacy rule if it exists
                 firewall-cmd --permanent --remove-rich-rule="rule family='ipv4' source address='$wl_ip' accept" >/dev/null 2>&1 || true
-                # 2. Inject the new rule with absolute priority (-100)
-                firewall-cmd --permanent --add-rich-rule="rule priority='-100' family='ipv4' source address='$wl_ip' accept" >/dev/null 2>&1 || true
+
+                # Inject the new prioritized rule (-32000 guarantees absolute top execution)
+                firewall-cmd --permanent --add-rich-rule="rule priority='-32000' family='ipv4' source address='$wl_ip' accept" >/dev/null 2>&1 || true
             done <"$WHITELIST_FILE"
         fi
-        # ---------------------------------------------
+        # ----------------------------------------------------------------
 
         # 4. Add all Rich Rules
         firewall-cmd --permanent --add-rich-rule="rule source ipset='$SET_NAME' log prefix='[SysWarden-BLOCK] ' level='info' drop" >/dev/null 2>&1 || true
@@ -1272,18 +1286,7 @@ EOF
             fi
         fi
 
-        # --- FIX: RE-INJECT WHITELIST ACCEPT RULES ---
-        # Inserted FIRST so they can be safely overridden by stricter SSH rules below
-        if [[ -s "$WHITELIST_FILE" ]]; then
-            while IFS= read -r wl_ip; do
-                [[ -z "$wl_ip" ]] && continue
-                ufw insert 1 allow from "$wl_ip" >/dev/null 2>&1 || true
-            done <"$WHITELIST_FILE"
-        fi
-        # ---------------------------------------------
-
         # --- STRICT WIREGUARD SSH CLOAKING ---
-        # Inserted AFTER Whitelist using 'insert 1' to guarantee absolute top priority
         if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
             # Priority 3: Deny public SSH access
             ufw insert 1 deny "${SSH_PORT:-22}/tcp" >/dev/null 2>&1 || true
@@ -1291,10 +1294,17 @@ EOF
             # Priority 2: Allow SSH strictly from the WG Subnet
             ufw insert 1 allow from "${WG_SUBNET}" to any port "${SSH_PORT:-22}" proto tcp >/dev/null 2>&1 || true
 
-            # Priority 1: Allow UDP port for WireGuard Tunnel to establish connection
+            # Priority 1: Allow UDP port for WireGuard Tunnel
             ufw insert 1 allow "${WG_PORT:-51820}/udp" >/dev/null 2>&1 || true
         fi
-        # -------------------------------------
+
+        # --- FIX DEVSECOPS: WHITELIST MUST BE ON TOP ---
+        if [[ -s "$WHITELIST_FILE" ]]; then
+            while IFS= read -r wl_ip; do
+                [[ -z "$wl_ip" ]] && continue
+                ufw insert 1 allow from "$wl_ip" >/dev/null 2>&1 || true
+            done <"$WHITELIST_FILE"
+        fi
 
         ufw reload
         log "INFO" "UFW rules applied."
@@ -1349,33 +1359,6 @@ EOF
             fi
         fi
 
-        # --- FIX: STRICT WHITELIST SYNCHRONIZATION (ANTI-GHOST RULES) ---
-        log "INFO" "Synchronizing Whitelist with Firewalld memory..."
-
-        # 1. Hunt and destroy ALL existing priority -100 rules in permanent memory
-        while IFS= read -r rule; do
-            if [[ "$rule" == *"priority=\"-100\""* ]]; then
-                firewall-cmd --permanent --remove-rich-rule="$rule" >/dev/null 2>&1 || true
-            fi
-        done < <(firewall-cmd --permanent --list-rich-rules 2>/dev/null || true)
-
-        # 2. Re-inject ONLY the IPs that are currently in the text file
-        if [[ -s "$WHITELIST_FILE" ]]; then
-            while IFS= read -r wl_ip; do
-                [[ -z "$wl_ip" ]] && continue
-                # Clean up any old unprioritized legacy rule if it exists
-                firewall-cmd --permanent --remove-rich-rule="rule family='ipv4' source address='$wl_ip' accept" >/dev/null 2>&1 || true
-                # Inject the new prioritized rule
-                firewall-cmd --permanent --add-rich-rule="rule priority='-100' family='ipv4' source address='$wl_ip' accept" >/dev/null 2>&1 || true
-            done <"$WHITELIST_FILE"
-        fi
-        # ----------------------------------------------------------------
-
-        # --- ESSENTIAL CONNECTION TRACKING (ALWAYS ACTIVE) ---
-        while iptables -D INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null; do :; done
-        iptables -I INPUT 1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-        # -----------------------------------------------------
-
         # --- STRICT WIREGUARD SSH CLOAKING ---
         if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
             # Clean existing WG rules first to prevent duplicates
@@ -1384,13 +1367,26 @@ EOF
             while iptables -D INPUT -i wg0 -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT 2>/dev/null; do :; done
             while iptables -D INPUT -i lo -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT 2>/dev/null; do :; done
 
-            # Insert top-priority rules (inserted in reverse order so they stack correctly below ESTABLISHED)
-            iptables -I INPUT 2 -p tcp --dport "${SSH_PORT:-22}" -j DROP
-            iptables -I INPUT 2 -i wg0 -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT
-            iptables -I INPUT 2 -i lo -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT
-            iptables -I INPUT 2 -p udp --dport "${WG_PORT:-51820}" -j ACCEPT
+            # Insert top-priority rules (inserted in reverse order so they stack correctly)
+            iptables -I INPUT 1 -p tcp --dport "${SSH_PORT:-22}" -j DROP
+            iptables -I INPUT 1 -i wg0 -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT
+            iptables -I INPUT 1 -i lo -p tcp --dport "${SSH_PORT:-22}" -j ACCEPT
+            iptables -I INPUT 1 -p udp --dport "${WG_PORT:-51820}" -j ACCEPT
         fi
-        # -------------------------------------
+
+        # --- FIX DEVSECOPS: STRICT WHITELIST EVALUATION ---
+        if [[ -s "$WHITELIST_FILE" ]]; then
+            while IFS= read -r wl_ip; do
+                [[ -z "$wl_ip" ]] && continue
+                if ! iptables -C INPUT -s "$wl_ip" -j ACCEPT 2>/dev/null; then
+                    iptables -I INPUT 1 -s "$wl_ip" -j ACCEPT
+                fi
+            done <"$WHITELIST_FILE"
+        fi
+
+        # --- ESSENTIAL CONNECTION TRACKING (ALWAYS ACTIVE AT TOP) ---
+        while iptables -D INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null; do :; done
+        iptables -I INPUT 1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
         # Save IPtables persistence for legacy OS
         if command -v netfilter-persistent >/dev/null; then
@@ -4107,7 +4103,7 @@ EOF
 # SYSWARDEN v9.40 - UI DASHBOARD GENERATION (EXPANDED REGISTRY)
 # ==============================================================================
 function generate_dashboard() {
-    log "INFO" "Generating the Serverless Dashboard UI (Expanded v1.07)..."
+    log "INFO" "Generating the Serverless Dashboard UI (Expanded v1.08)..."
 
     local UI_DIR="/etc/syswarden/ui"
     mkdir -p "$UI_DIR"
@@ -4172,7 +4168,7 @@ function generate_dashboard() {
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center gap-3">
                     <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.7)]" id="status-indicator"></div>
-                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v1.07</span></h1>
+                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v1.08</span></h1>
                 </div>
                 
                 <div class="flex items-center gap-2 bg-gray-100 dark:bg-dark-900 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
@@ -5025,7 +5021,7 @@ fi
 if [[ "$MODE" != "update" ]]; then
     clear
     echo -e "${GREEN}#############################################################"
-    echo -e "#     SysWarden Tool Installer (Universal v1.07)     #"
+    echo -e "#     SysWarden Tool Installer (Universal v1.08)     #"
     echo -e "#############################################################${NC}"
 fi
 
