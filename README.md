@@ -95,7 +95,6 @@ SysWarden (DevSecOps Technology Stack)
 ## Key Features
 
 - **Strict SSH Cloaking (Zero Trust):** Enforces a mathematically absolute policy for SSH. Access is exclusively restricted to the WireGuard VPN (wg0) and Loopback (lo) interfaces. An immediate, top-priority kernel DROP rule explicitly prevents any public access, ensuring that even locally whitelisted IPs cannot bypass the VPN requirement for SSH.
-- **Serverless Telemetry Dashboard:** A lightweight, real-time Web UI served via a native Python HTTP daemon. It provides live Layer 3 (Kernel) and Layer 7 (Fail2ban) blocking statistics, active jail triggers, and real-time IP registries without requiring heavy web servers like Nginx or Apache.
 - **Firewall State Machine:** CLI commands (whitelist, blocklist) operate on a strict "Single Source of Truth" model. They securely write to local persistence files, universally purge memory conflicts, and trigger the orchestrator to completely rebuild the firewall safely, preserving the strict rule hierarchy across all OS backends.
 - **Universal OS Support:** Auto-detects and seamlessly adapts to Debian, Ubuntu, CentOS Stream, Fedora, AlmaLinux, Rocky Linux, and Alpine Linux (OpenRC).
 - **Intelligent Backend Detection & Routing:** Automatically selects and configures the optimal firewall technology present on your system (Nftables Flat Syntax, Firewalld Rich Rules, or IPSet/Iptables).
