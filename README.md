@@ -65,31 +65,31 @@ It is highly recommended for securing:
 ```text
 SysWarden (DevSecOps Technology Stack)
 ├── Core Orchestration & Security
-│   ├── Bash Scripting             # OS Hardening, Automation & Zero Trust Logic
-│   ├── Linux OS & Kernel          # Broad Support (Debian/Ubuntu, RHEL/Alma, Alpine)
-│   └── awk & jq                   # Strict Semantic Validation & Atomic JSON Serialization
+│   ├── Bash Scripting             # OS Hardening, Automation & Zero Trust Logic
+│   ├── Linux OS & Kernel          # Broad Support (Debian/Ubuntu, RHEL/Alma, Alpine)
+│   └── awk & jq                   # Strict Semantic Validation & Atomic JSON Serialization
 │
 ├── Firewall & Networking Engine
-│   ├── Nftables                   # Modern Packet Filtering (Atomic Transactions)
-│   ├── IPSet + Iptables           # High-Performance Hashing (Legacy Fallback)
-│   ├── Firewalld                  # Dynamic Zone Management (RHEL Ecosystem)
-│   ├── Docker Integration         # Native DOCKER-USER Chain Isolation
-│   └── WireGuard VPN              # Stealth Management Interface & Dynamic Clients
+│   ├── Nftables                   # Modern Packet Filtering (Atomic Transactions)
+│   ├── IPSet + Iptables           # High-Performance Hashing (Legacy Fallback)
+│   ├── Firewalld                  # Dynamic Zone Management (RHEL Ecosystem)
+│   ├── Docker Integration         # Native DOCKER-USER Chain Isolation
+│   └── WireGuard VPN              # Stealth Management Interface & Dynamic Clients
 │
 ├── Active Defense & Daemons
-│   ├── Fail2ban                   # Dynamic IPS (Zero Trust Jails & Strict Anchoring)
-│   ├── Rsyslog                    # Kernel/Auth Log Isolation (Anti-Injection Shield)
-│   ├── Python 3 (Secure Wrapper)  # Sandboxed Telemetry Dashboard UI (Strict Headers)
-│   ├── Python 3 (Daemon)          # Asynchronous AbuseIPDB API Reporting
-│   ├── Systemd / OpenRC           # OS-Specific Service & Privilege Management
-│   └── Logrotate                  # Log Maintenance & Space Optimization
+│   ├── Fail2ban                   # Dynamic IPS (Zero Trust Jails & Strict Anchoring)
+│   ├── Rsyslog                    # Kernel/Auth Log Isolation (Anti-Injection Shield)
+│   ├── Nginx & OpenSSL            # Hardened TLS Dashboard (Zero Trust & CSP)
+│   ├── Python 3 (Daemon)          # Asynchronous AbuseIPDB API Reporting
+│   ├── Systemd / OpenRC           # OS-Specific Service & Privilege Management
+│   └── Logrotate                  # Log Maintenance & Space Optimization
 │
 └── Threat Intelligence & Integrations
-    ├── Data-Shield IPv4 Blocklist # Primary Threat Intelligence Source
-    ├── Spamhaus / RADB            # Dynamic ASN Routing Data Validation
-    ├── IPDeny                     # Country-Level Geo-Blocking Data Sets
-    ├── AbuseIPDB API              # Community Attack Reporting (Outbound)
-    └── Wazuh XDR Agent            # SIEM, File Integrity & Vulnerability Detection
+    ├── Data-Shield IPv4 Blocklist # Primary Threat Intelligence Source
+    ├── Spamhaus / RADB            # Dynamic ASN Routing Data Validation
+    ├── IPDeny                     # Country-Level Geo-Blocking Data Sets
+    ├── AbuseIPDB API              # Community Attack Reporting (Outbound)
+    └── Wazuh XDR Agent            # SIEM, File Integrity & Vulnerability Detection
 ```
 
 ## Key Features
@@ -313,28 +313,25 @@ or
 ./install-syswarden-alpine.sh syswarden-auto.conf
 ```
 
-### 4. Serverless Telemetry Dashboard Access
+### 4. Enterprise Telemetry Dashboard Access
 
-SysWarden includes a fully decoupled, real-time Telemetry Dashboard. For maximum security, the dashboard relies on a Python HTTP daemon that explicitly avoids listening on public network interfaces. Access depends on your WireGuard configuration:
+SysWarden v1.20+ introduces a hardened, enterprise-grade Nginx reverse proxy to serve the real-time Telemetry Dashboard. The legacy Python daemon has been permanently retired. For maximum security, the dashboard strictly enforces HTTPS using an auto-generated RSA 4096-bit self-signed certificate and employs Zero Trust IP restrictions.
 
-**Scenario A: WireGuard VPN Enabled (Recommended)**
-If you chose to deploy the stealth management VPN during installation, the dashboard securely binds to the internal VPN subnet gateway.
+**Accessing the Dashboard**
+Open your browser and navigate to: `https://<YOUR_SERVER_IP>:9999`
 
-1. Connect to the server using your generated WireGuard client profile.
-2. Open your local browser and navigate to: `http://10.66.66.1:9999` (Replace `10.66.66.1` with your defined `WG_SUBNET` gateway).
+> **Note:** Because the dashboard uses a self-signed cryptographic certificate, your browser will display a security warning (e.g., `NET::ERR_CERT_AUTHORITY_INVALID`). This is expected and highly secure. You must accept the risk/bypass the warning to proceed to the interface.
 
-**Scenario B: WireGuard VPN Disabled**
-If you opted out of the VPN, the dashboard strictly binds to `127.0.0.1` (localhost) to prevent public exposure. You must use an SSH tunnel to access it.
+**Zero Trust Access Control**
+The dashboard is completely locked down at the web server level. Even though port 9999 is open in the OS firewall, Nginx will instantly drop incoming requests (HTTP 403 Forbidden) from any IP that is not explicitly authorized in its configuration.
 
-> **Important:** Due to the strict SSH Priority Guillotine, your SSH port is dropped globally by default. You must explicitly authorize your public IP address before attempting to tunnel. First, grant yourself Day-2 access via the management CLI: `syswarden-mng allow-ssh <YOUR_IP>`.
+* **Scenario A: WireGuard VPN Enabled (Recommended)**
+  If you chose to deploy the stealth management VPN during installation, your entire WireGuard subnet (e.g., `10.66.66.0/24`) is natively authorized. Simply connect to your WireGuard client profile and access the dashboard securely.
 
-```bash
-ssh -L 9999:127.0.0.1:9999 your_user@your_server_ip -p YOUR_SSH_PORT
-
-or
-
-ssh -i ~/.ssh/your_id -L 9999:127.0.0.1:9999 root@your_server_ip -p YOUR_SSH_PORT
-```
+* **Scenario B: Direct Public Access**
+  During installation, the orchestrator automatically detects and whitelists your current Admin SSH IP address. You can access the dashboard directly over the internet from this specific IP. 
+  
+  *If your public IP changes (e.g., dynamic residential IP or moving to a café), you will be locked out. You must explicitly authorize your new public IP using the management CLI: `syswarden-mng whitelist <NEW_IP>` followed by `syswarden-mng reload` to synchronize Nginx.*
 
 ### 5. CLI Orchestration Commands
 
