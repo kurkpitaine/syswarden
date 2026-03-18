@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# SysWarden v1.21 - Audit Tool
+# SysWarden v1.22 - DevSecOps Audit & Compliance Tool
 # Copyright (C) 2026 duggytuxy - Laurent M.
 #
 # This program is free software: you can redistribute it and/or modify
@@ -199,14 +199,14 @@ if [[ -f "/etc/syswarden.conf" ]]; then
 fi
 
 # --- Verify GeoIP Threat Intelligence ---
-if [[ -n "${GEOBLOCK_COUNTRIES:-}" ]]; then
+if [[ -n "${GEOBLOCK_COUNTRIES:-}" ]] && [[ "${GEOBLOCK_COUNTRIES:-none}" != "none" ]]; then
     pass "GeoIP Threat Intelligence is actively deployed and enforced."
 else
     info "GeoIP Threat Intelligence (Skipped by user)."
 fi
 
 # --- Verify ASN Routing Threat Intelligence ---
-if [[ -n "${BLOCK_ASNS:-}" ]]; then
+if [[ -n "${BLOCK_ASNS:-}" ]] && [[ "${BLOCK_ASNS:-none}" != "none" ]]; then
     pass "Manual ASN Routing Defense is actively deployed."
 else
     info "Manual ASN Routing Defense (Skipped by user)."
@@ -264,7 +264,7 @@ if is_service_active "fail2ban"; then
         # Audit IgnoreIP (Anti Self-DoS)
         IGNORE_IPS=$(fail2ban-client get sshd ignoreip 2>/dev/null || true)
 
-        # FIX: fail2ban-client outputs IPs on multiple lines. We must count the total IPv4 patterns.
+        # Count total IPv4 patterns
         IP_COUNT=$(echo "$IGNORE_IPS" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort -u | wc -l)
 
         if [[ "$IP_COUNT" -gt 1 ]]; then
@@ -279,32 +279,50 @@ else
     fail "Fail2ban service is completely offline."
 fi
 
-# --- 6. SECURE TELEMETRY & UI DASHBOARD ---
-log_header "Phase 5: DevSecOps Telemetry & UI Sandboxing"
+# --- 6. SECURE TELEMETRY & ENTERPRISE DASHBOARD (NGINX) ---
+log_header "Phase 5: DevSecOps Telemetry & Enterprise Dashboard"
 
-# UI Service
-if is_service_active "syswarden-ui"; then
-    pass "SysWarden UI Server daemon is active."
-    # Verify the deployment of the secure Python wrapper
-    if [[ -x "/usr/local/bin/syswarden-ui-server.py" ]]; then
-        pass "Secure Python Web Wrapper (Strict HTTP Headers) is deployed."
-    else
-        fail "Secure Python Web Wrapper is missing."
-    fi
+# 1. Nginx Service Status
+if is_service_active "nginx"; then
+    pass "Nginx Enterprise Web Server daemon is active."
 else
-    fail "SysWarden UI Server is offline."
+    fail "Nginx Web Server is offline or not installed."
 fi
 
-# --- FIX: Verify telemetry payload permissions ---
-# Permissions relaxed to 644 (instead of 600) to allow the unprivileged
-# Python web server (running as nobody) to read and serve the JSON data.
-check_file_perms "/etc/syswarden/ui/data.json" "644" "nobody"
+# 2. Cryptographic Assets (TLS Certificate Verification)
+if [[ -f "/etc/syswarden/ssl/syswarden.crt" ]] && [[ -f "/etc/syswarden/ssl/syswarden.key" ]]; then
+    check_file_perms "/etc/syswarden/ssl/syswarden.key" "600" "root"
+    pass "Self-Signed RSA 4096 TLS Certificate is securely deployed."
+else
+    fail "Dashboard TLS Certificates are missing."
+fi
+
+# 3. Telemetry Engine Backend
+if [[ -x "/usr/local/bin/syswarden-telemetry.sh" ]]; then
+    pass "Telemetry Orchestrator script is deployed and executable."
+else
+    fail "Telemetry Orchestrator script is missing."
+fi
+
+# 4. Privilege Separation (Payload Ownership)
+if [[ -f "/etc/syswarden/ui/data.json" ]]; then
+    payload_perms=$(stat -c "%a" "/etc/syswarden/ui/data.json" 2>/dev/null || stat -f "%Op" "/etc/syswarden/ui/data.json" | cut -c4-6)
+    payload_owner=$(stat -c "%U" "/etc/syswarden/ui/data.json" 2>/dev/null || stat -f "%Su" "/etc/syswarden/ui/data.json")
+
+    # The payload MUST be strictly readable by the web daemon (640) and owned by it
+    if [[ "$payload_perms" == *"640" ]] && [[ "$payload_owner" == "nginx" || "$payload_owner" == "www-data" ]]; then
+        pass "Telemetry payload ownership & permissions are strictly isolated (640, Owner: $payload_owner)."
+    else
+        fail "Telemetry payload has weak permissions/ownership (Got $payload_perms $payload_owner, Expected 640 nginx/www-data)."
+    fi
+else
+    warn "Telemetry payload (data.json) not found yet. Awaiting initial cron execution."
+fi
 
 # AbuseIPDB Async Reporter (Optional Component)
 if [[ -f "/usr/local/bin/syswarden_reporter.py" ]]; then
     if is_service_active "syswarden-reporter"; then
         pass "AbuseIPDB Async Reporter is active."
-        # Verify API Key protection
         check_file_perms "/usr/local/bin/syswarden_reporter.py" "750" "root"
     else
         warn "AbuseIPDB Reporter is installed but offline."
@@ -333,7 +351,6 @@ if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewa
         CLOAK_PASSED=1
     fi
 elif command -v nft >/dev/null 2>&1 && nft list table inet syswarden_table >/dev/null 2>&1; then
-    # DevSecOps Fix: Flatten output to prevent multi-line buffer tearing
     NFT_RULES=$(nft -n list chain inet syswarden_table input 2>/dev/null | tr '\n' ' ' | tr '\t' ' ')
     if echo "$NFT_RULES" | grep -qE "tcp dport ${SSH_PORT}.*drop"; then
         CLOAK_PASSED=1
@@ -351,7 +368,6 @@ fi
 if [[ $CLOAK_PASSED -eq 1 ]]; then
     pass "SSH Cloaking VERIFIED: Port $SSH_PORT is strictly dropped globally (Priority Guillotine)."
 else
-    # CSPM Contextualization: If WG is not installed, public SSH is an accepted risk, not a failure.
     if [[ -f "/etc/wireguard/wg0.conf" ]]; then
         fail "SSH Cloaking FAILED: Port $SSH_PORT is exposed despite VPN configuration (Missing drop rule)."
     else
@@ -374,7 +390,6 @@ if [[ -d "/etc/wireguard" ]] && [[ -f "/etc/wireguard/wg0.conf" ]]; then
             VPN_ALLOW_PASSED=1
         fi
     elif command -v nft >/dev/null 2>&1 && nft list table inet syswarden_table >/dev/null 2>&1; then
-        # DevSecOps Fix: Flatten output to prevent multi-line buffer tearing
         NFT_RULES=$(nft -n list chain inet syswarden_table input 2>/dev/null | tr '\n' ' ' | tr '\t' ' ')
         if echo "$NFT_RULES" | grep -qE "iifname.*wg0.*tcp dport ${SSH_PORT}.*accept"; then
             VPN_ALLOW_PASSED=1
@@ -417,14 +432,12 @@ log_header "Phase 7: Exposed Services & Firewall Persistence (CSPM)"
 
 # --- 7.1 Firewall Persistence Check (Cold Boot Survivability) ---
 if [[ "$FW_ENGINE" == "Nftables" ]]; then
-    # Verify SysWarden anchor in Alpine/Standard Nftables main config
     if grep -q 'include "/etc/syswarden/syswarden.nft"' /etc/nftables.nft 2>/dev/null || grep -q 'include "/etc/syswarden/syswarden.nft"' /etc/nftables.conf 2>/dev/null; then
         pass "Firewall Persistence VERIFIED: SysWarden Nftables rules are firmly anchored in main OS config."
     else
         fail "Firewall Persistence FAILED: SysWarden include directive is missing in main Nftables config."
     fi
 
-    # Verify Alpine Native OS Bypass (if applicable)
     if [[ "$OS_TYPE" == "Alpine" ]]; then
         if [[ -f "/etc/nftables.d/syswarden-os-bypass.nft" ]]; then
             pass "OS Bypass Module VERIFIED: Native Alpine drop policy safely bypassed for essential active services."
@@ -460,7 +473,7 @@ fi
 # --- 7.2 Exposed Listening Services (Attack Surface Mapping) ---
 info "Scanning for globally exposed listening ports (0.0.0.0 / ::)..."
 
-# Extract live sockets directly from the kernel (Fallback to netstat if ss is unavailable)
+# Extract live sockets directly from the kernel
 if command -v ss >/dev/null 2>&1; then
     LISTEN_PORTS=$(ss -tlnp 2>/dev/null | grep -E '0\.0\.0\.0|::' | awk '{print $4}' | awk -F':' '{print $NF}' | sort -nu || true)
 else
@@ -469,7 +482,6 @@ fi
 
 if [[ -n "$LISTEN_PORTS" ]]; then
     for PORT in $LISTEN_PORTS; do
-        # Evaluate each exposed port against SysWarden's Defense-in-Depth profile
         if [[ "$PORT" -eq "$SSH_PORT" ]]; then
             info "Exposed Port: $PORT/TCP (SSH) - Guarded by Zero Trust VPN Guillotine (Drop policy)."
         elif [[ "$PORT" -eq 80 || "$PORT" -eq 443 ]]; then
@@ -477,7 +489,7 @@ if [[ -n "$LISTEN_PORTS" ]]; then
         elif [[ "$PORT" -eq 111 ]]; then
             info "Exposed Port: $PORT/TCP (rpcbind) - Internal RPC service, guarded by default OS Firewall."
         elif [[ "$PORT" -eq 9999 ]]; then
-            info "Exposed Port: $PORT/TCP (SysWarden UI) - Guarded by Localhost/VPN binding."
+            info "Exposed Port: $PORT/TCP (Nginx Enterprise UI) - Guarded by Zero Trust IP Restriction & TLS."
         elif [[ "$PORT" -eq 51820 || "$PORT" -eq "${WG_PORT:-51820}" ]]; then
             info "Exposed Port: $PORT/UDP (WireGuard) - Guarded by SysWarden Stealth UDP protections."
         elif [[ "$PORT" -eq 53 || "$PORT" -eq 123 || "$PORT" -eq 161 ]]; then
