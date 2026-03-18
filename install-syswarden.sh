@@ -33,7 +33,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v1.24"
+VERSION="v1.25"
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
 BLOCKLIST_FILE="$SYSWARDEN_DIR/blocklist.txt"
@@ -1122,7 +1122,7 @@ EOF
             # 3. Allow WireGuard UDP port for tunnel establishment
             firewall-cmd --permanent --add-port="${WG_PORT:-51820}/udp" >/dev/null 2>&1 || true
 
-            # --- STRICT ZERO TRUST HIERARCHY (v1.24) - DEBIAN PARITY) ---
+            # --- STRICT ZERO TRUST HIERARCHY (v1.25) - DEBIAN PARITY) ---
 
             # Priority -1000: Highest priority. Allow SSH & Dashboard strictly from VPN.
             firewall-cmd --permanent --add-rich-rule="rule priority='-1000' family='ipv4' source address='${WG_SUBNET}' port port='${SSH_PORT:-22}' protocol='tcp' accept" >/dev/null 2>&1 || true
@@ -3965,7 +3965,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v1.24 - TELEMETRY BACKEND (SERVERLESS - IP REGISTRY UPDATE)
+# SYSWARDEN v1.25 - TELEMETRY BACKEND (SERVERLESS - IP REGISTRY UPDATE)
 # ==============================================================================
 function setup_telemetry_backend() {
     log "INFO" "Installation of the advanced telemetry engine (Backend)..."
@@ -4130,7 +4130,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v1.24 - NGINX SECURE DASHBOARD (HTTPS / CSP / IP-RESTRICTED)
+# SYSWARDEN v1.25 - NGINX SECURE DASHBOARD (HTTPS / CSP / IP-RESTRICTED)
 # ==============================================================================
 function generate_dashboard() {
     log "INFO" "Generating the Nginx-secured Dashboard UI (HTTPS/CSP/IP-Restricted)..."
@@ -4189,7 +4189,7 @@ function generate_dashboard() {
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center gap-3">
                     <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.7)]" id="status-indicator"></div>
-                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v1.24</span></h1>
+                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v1.25</span></h1>
                 </div>
                 
                 <div class="flex items-center gap-2 bg-gray-100 dark:bg-dark-900 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
@@ -5158,7 +5158,7 @@ fi
 if [[ "$MODE" != "update" ]]; then
     clear
     echo -e "${GREEN}#############################################################"
-    echo -e "#     SysWarden Tool Installer (Universal v1.24)     #"
+    echo -e "#     SysWarden Tool Installer (Universal v1.25)     #"
     echo -e "#############################################################${NC}"
 fi
 
@@ -5188,6 +5188,54 @@ if [[ "$MODE" != "update" ]]; then
     # Re-detect backend! DNF might have just installed Firewalld or Nftables (via fail2ban)
     detect_os_backend
     # ---------------------------------
+
+    # --- DEVSECOPS: PRE-FLIGHT CHECKLIST (Interactive Mode Only) ---
+    if [[ "$MODE" != "auto" ]]; then
+        BOLD='\033[1m'
+        CYAN='\033[0;36m'
+        clear
+        echo -e "${BLUE}${BOLD}==============================================================================${NC}"
+        echo -e "${GREEN}${BOLD}                   SYSWARDEN v1.25 - PRE-FLIGHT CHECKLIST                     ${NC}"
+        echo -e "${BLUE}${BOLD}==============================================================================${NC}"
+        echo -e "Before proceeding with the deployment, please ensure you have the following"
+        echo -e "information ready. If you lack any required data, press [Ctrl+C] to abort,"
+        echo -e "gather the info, and restart the script.\n"
+
+        echo -e "${BOLD}1. SSH CONFIGURATION${NC}"
+        echo -e "   You will need to confirm the custom SSH port used to connect to this server."
+
+        echo -e "\n${BOLD}2. WIREGUARD VPN${NC} ${YELLOW}(Optional)${NC}"
+        echo -e "   Decide if you need a stealth admin VPN. If unsure, consult your SysAdmin."
+
+        echo -e "\n${BOLD}3. DOCKER INTEGRATION${NC} ${YELLOW}(Optional)${NC}"
+        echo -e "   Requires Layer 3 routing adjustments for containers. If unsure, consult your SysAdmin."
+
+        echo -e "\n${BOLD}4. GEOIP BLOCKING${NC} ${YELLOW}(Optional)${NC}"
+        echo -e "   ISO country codes to drop instantly (e.g., RU,CN,KP)."
+        echo -e "   Reference: ${CYAN}https://www.ipdeny.com/ipblocks/${NC}"
+
+        echo -e "\n${BOLD}5. ASN BLOCKING${NC} ${YELLOW}(Optional)${NC}"
+        echo -e "   Target Autonomous System Numbers to drop (e.g., AS1234, AS5678)."
+        echo -e "   Reference: ${CYAN}https://www.spamhaus.org/drop/asndrop.json${NC}"
+
+        echo -e "\n${BOLD}6. THREAT INTEL BLOCKLISTS${NC}"
+        echo -e "   [1] Standard (Web Servers)      [2] Critical (High Security)"
+        echo -e "   [3] Custom (Plaintext URL .txt) [4] Disabled"
+
+        echo -e "\n${BOLD}7. ABUSEIPDB INTEGRATION${NC} ${YELLOW}(Optional)${NC}"
+        echo -e "   Requires a valid API Key to automatically report Layer 7 attackers."
+        echo -e "   Get one at: ${CYAN}https://www.abuseipdb.com/account/api${NC}"
+
+        echo -e "\n${BOLD}8. WAZUH SIEM AGENT${NC} ${YELLOW}(Optional)${NC}"
+        echo -e "   Required: Manager IP, Enrollment Port (1515), Listen Port (1514), Agent Group."
+        echo -e "   If unsure about your SIEM architecture, consult your Security Admin."
+
+        echo -e "${BLUE}${BOLD}==============================================================================${NC}"
+        read -p "$(echo -e "${YELLOW}Press [ENTER] to begin the configuration, or [Ctrl+C] to abort... ${NC}")"
+        echo ""
+        log "INFO" "Pre-Flight Checklist acknowledged. Starting interactive configuration..."
+    fi
+    # ---------------------------------------------------------------
 
     define_ssh_port "$MODE"
     define_wireguard "$MODE"
