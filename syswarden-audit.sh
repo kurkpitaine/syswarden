@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# SysWarden v1.47 - DevSecOps Audit & Compliance Tool
+# SysWarden v1.48 - DevSecOps Audit & Compliance Tool
 # Copyright (C) 2026 duggytuxy - Laurent M.
 #
 # This program is free software: you can redistribute it and/or modify
@@ -122,6 +122,33 @@ else
     fail "/etc/cron.allow is missing (Crontab not locked down)"
 fi
 
+# --- DEVSECOPS FIX: CRON ORCHESTRATION & IDEMPOTENCE (v1.48) ---
+# Scan for legacy update loops that cause ghost processes
+CRON_SAFE=1
+CRON_FOUND=0
+for cron_file in "/etc/crontabs/root" "/etc/cron.d/syswarden-update"; do
+    if [[ -f "$cron_file" ]]; then
+        if grep -q "syswarden" "$cron_file"; then
+            CRON_FOUND=1
+            # If the legacy 'update' parameter is found without 'cron-', it's a critical failure
+            if grep -q "\.sh update >" "$cron_file" 2>/dev/null; then
+                CRON_SAFE=0
+            fi
+        fi
+    fi
+done
+
+if [[ $CRON_FOUND -eq 1 ]]; then
+    if [[ $CRON_SAFE -eq 1 ]]; then
+        pass "Cron Orchestration VERIFIED: Background jobs use the secure 'cron-update' mode (Idempotent)."
+    else
+        fail "Cron Orchestration FAILED: Legacy 'update' parameter detected. High risk of Ghost Processes!"
+    fi
+else
+    warn "Cron Orchestration: No automated SysWarden background jobs found."
+fi
+# ---------------------------------------------------------------
+
 # Audit privileged groups for unauthorized standard users (Humans UID >= 1000)
 PRIV_USERS=$(awk -F':' '/^(wheel|sudo|adm):/ {print $4}' /etc/group | tr ',' '\n' | grep -v '^$' | grep -v 'root' || true)
 UNAUTHORIZED_USERS=""
@@ -237,7 +264,7 @@ else
     fail "SysWarden firewall rules not found in kernel space."
 fi
 
-# --- Verify Catch-All Drop Policy (v1.47 Zero Trust Architecture) ---
+# --- Verify Catch-All Drop Policy (v1.48 Zero Trust Architecture) ---
 CATCH_ALL_PASSED=0
 if [[ "$FW_ENGINE" == "Nftables" ]]; then
     if nft list chain inet syswarden_table input 2>/dev/null | grep -q "\[Catch-All\]"; then
@@ -266,7 +293,7 @@ else
 fi
 # ----------------------------------------------------------------
 
-# --- DEVSECOPS FIX: STATEFUL DOCKER ROUTING AUDIT (v1.47) ---
+# --- DEVSECOPS FIX: STATEFUL DOCKER ROUTING AUDIT (v1.48) ---
 if command -v docker >/dev/null 2>&1 && is_service_active "docker"; then
     if command -v iptables >/dev/null 2>&1 && iptables -n -L DOCKER-USER >/dev/null 2>&1; then
 
@@ -304,6 +331,17 @@ if is_service_active "fail2ban"; then
     # Ping Fail2ban socket to ensure it hasn't crashed silently
     if fail2ban-client ping >/dev/null 2>&1; then
         pass "Fail2ban socket is highly responsive (Pong)."
+
+        # --- DEVSECOPS FIX: PROCESS IDEMPOTENCE (v1.48) ---
+        # Count running instances. Using regex bracket trick [f] to exclude the grep process itself safely.
+        # wc -l ensures exit code 0 even if no process is found, respecting 'set -e'.
+        F2B_PROC_COUNT=$(ps aux | grep "[f]ail2ban-server" | wc -l)
+        if [[ "$F2B_PROC_COUNT" -gt 1 ]]; then
+            fail "Process Duplication FAILED: $F2B_PROC_COUNT Fail2ban instances detected! Severe risk of SQLite locking."
+        else
+            pass "Process Idempotence VERIFIED: A single, strictly controlled Fail2ban daemon is active."
+        fi
+        # --------------------------------------------------
 
         # Verify Zero Trust Jail environment (No OS overrides)
         if [[ -f "/etc/fail2ban/jail.d/alpine-ssh.conf" ]] || [[ -f "/etc/fail2ban/jail.d/defaults-debian.conf" ]]; then
@@ -361,6 +399,19 @@ if [[ -x "/usr/local/bin/syswarden-telemetry.sh" ]]; then
 else
     fail "Telemetry Orchestrator script is missing."
 fi
+
+# --- DEVSECOPS FIX: PROCESS IDEMPOTENCE (v1.48) ---
+# We force a single numeric value by taking only the first line and removing spaces
+# This prevents the "0 0" or "1 1" error on some distributions
+TELEMETRY_RAW=$(ps aux | grep "[s]yswarden-telemetry.sh" | wc -l || echo 0)
+TELEMETRY_PROC_COUNT=$(echo "$TELEMETRY_RAW" | awk '{print $1}' | head -n1)
+
+if [ "${TELEMETRY_PROC_COUNT:-0}" -gt 1 ]; then
+    fail "Process Duplication FAILED: $TELEMETRY_PROC_COUNT telemetry scripts are running! CPU leak detected."
+else
+    pass "Process Idempotence VERIFIED: Telemetry daemon state is clean (<=1 active instance)."
+fi
+# --------------------------------------------------
 
 # 4. Privilege Separation (Payload Ownership)
 if [[ -f "/etc/syswarden/ui/data.json" ]]; then
