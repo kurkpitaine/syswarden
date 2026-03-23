@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# SysWarden v1.49 - DevSecOps Audit & Compliance Tool
+# SysWarden v1.50 - DevSecOps Audit & Compliance Tool
 # Copyright (C) 2026 duggytuxy - Laurent M.
 #
 # This program is free software: you can redistribute it and/or modify
@@ -122,7 +122,7 @@ else
     fail "/etc/cron.allow is missing (Crontab not locked down)"
 fi
 
-# --- DEVSECOPS FIX: CRON ORCHESTRATION & IDEMPOTENCE (v1.49) ---
+# --- DEVSECOPS FIX: CRON ORCHESTRATION & IDEMPOTENCE (v1.50) ---
 # Scan for legacy update loops that cause ghost processes
 CRON_SAFE=1
 CRON_FOUND=0
@@ -264,7 +264,7 @@ else
     fail "SysWarden firewall rules not found in kernel space."
 fi
 
-# --- Verify Catch-All Drop Policy (v1.49 Zero Trust Architecture) ---
+# --- Verify Catch-All Drop Policy (v1.50 Zero Trust Architecture) ---
 CATCH_ALL_PASSED=0
 if [[ "$FW_ENGINE" == "Nftables" ]]; then
     if nft list chain inet syswarden_table input 2>/dev/null | grep -q "\[Catch-All\]"; then
@@ -293,7 +293,7 @@ else
 fi
 # ----------------------------------------------------------------
 
-# --- DEVSECOPS FIX: STATEFUL DOCKER ROUTING AUDIT (v1.49) ---
+# --- DEVSECOPS FIX: STATEFUL DOCKER ROUTING AUDIT (v1.50) ---
 if command -v docker >/dev/null 2>&1 && is_service_active "docker"; then
     if command -v iptables >/dev/null 2>&1 && iptables -n -L DOCKER-USER >/dev/null 2>&1; then
 
@@ -332,7 +332,7 @@ if is_service_active "fail2ban"; then
     if fail2ban-client ping >/dev/null 2>&1; then
         pass "Fail2ban socket is highly responsive (Pong)."
 
-        # --- DEVSECOPS FIX: PROCESS IDEMPOTENCE (v1.49) ---
+        # --- DEVSECOPS FIX: PROCESS IDEMPOTENCE (v1.50) ---
         # Count running instances. Using regex bracket trick [f] to exclude the grep process itself safely.
         # wc -l ensures exit code 0 even if no process is found, respecting 'set -e'.
         F2B_PROC_COUNT=$(ps aux | grep "[f]ail2ban-server" | wc -l)
@@ -400,7 +400,7 @@ else
     fail "Telemetry Orchestrator script is missing."
 fi
 
-# --- DEVSECOPS FIX: PROCESS IDEMPOTENCE (v1.49) ---
+# --- DEVSECOPS FIX: PROCESS IDEMPOTENCE (v1.50) ---
 # We force a single numeric value by taking only the first line and removing spaces
 # This prevents the "0 0" or "1 1" error on some distributions
 TELEMETRY_RAW=$(ps aux | grep "[s]yswarden-telemetry.sh" | wc -l || echo 0)
