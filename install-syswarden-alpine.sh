@@ -42,7 +42,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v1.60"
+VERSION="v1.61"
 ACTIVE_PORTS=""
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
@@ -874,11 +874,6 @@ apply_firewall_rules() {
         rc-update add nftables default >/dev/null 2>&1 || true
         rc-service nftables start >/dev/null 2>&1 || true
 
-        # --- SECURITY FIX: ATOMIC NFTABLES RELOAD ---
-        # We build the entire flat ruleset and sets inside a single file,
-        # then apply it via 'nft -f' to guarantee kernel-level atomicity.
-        # We chunk elements inside the file to bypass Alpine memory limits.
-
         cat <<EOF >"$TMP_DIR/syswarden.nft"
 add table inet syswarden_table
 flush table inet syswarden_table
@@ -898,18 +893,15 @@ add chain inet syswarden_table input { type filter hook input priority filter - 
 add rule inet syswarden_table input ct state established,related accept
 EOF
 
-        # --- FIX DEVSECOPS: WHITELIST MUST BE EVALUATED BEFORE ANY DROPS ---
         if [[ -s "$WHITELIST_FILE" ]]; then
             while IFS= read -r wl_ip; do
                 [[ -z "$wl_ip" ]] && continue
                 echo "add rule inet syswarden_table input ip saddr $wl_ip accept" >>"$TMP_DIR/syswarden.nft"
             done <"$WHITELIST_FILE"
         fi
-        # ------------------------------------------------------------------
 
         if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
             echo "add rule inet syswarden_table input udp dport ${WG_PORT:-51820} accept" >>"$TMP_DIR/syswarden.nft"
-            # DEVSECOPS FIX: Global Trust for the VPN Interface (Fixes Ping, DNS, and internal routing)
             echo "add rule inet syswarden_table input iifname { \"wg0\", \"lo\" } accept comment \"SysWarden: Global Trust for VPN\"" >>"$TMP_DIR/syswarden.nft"
             echo "add rule inet syswarden_table input tcp dport ${SSH_PORT:-22} log prefix \"[SysWarden-SSH-DROP] \" drop" >>"$TMP_DIR/syswarden.nft"
         fi
@@ -922,20 +914,11 @@ EOF
             echo "add rule inet syswarden_table input ip saddr @$ASN_SET_NAME log prefix \"[SysWarden-ASN] \" drop" >>"$TMP_DIR/syswarden.nft"
         fi
 
+        # --- DEVSECOPS FIX: NO CATCH-ALL HERE ---
+        # The Catch-All Drop and Active Ports allow are delegated to the native OS table (priority 0)
+        # This guarantees Fail2ban (priority -1) can inspect and reject traffic.
         cat <<EOF >>"$TMP_DIR/syswarden.nft"
 add rule inet syswarden_table input ip saddr @$SET_NAME log prefix "[SysWarden-BLOCK] " drop
-EOF
-
-        # --- ZERO TRUST: DYNAMIC ALLOW & CATCH-ALL DROP ---
-        if [[ -n "$ACTIVE_PORTS" ]] && [[ "$ACTIVE_PORTS" != "none" ]]; then
-            echo "add rule inet syswarden_table input tcp dport { ${SSH_PORT:-22}, 9999, $ACTIVE_PORTS } accept" >>"$TMP_DIR/syswarden.nft"
-        else
-            echo "add rule inet syswarden_table input tcp dport { ${SSH_PORT:-22}, 9999 } accept" >>"$TMP_DIR/syswarden.nft"
-        fi
-
-        cat <<EOF >>"$TMP_DIR/syswarden.nft"
-# The Catch-All Drop: Any packet reaching this line is unauthorized probing
-add rule inet syswarden_table input log prefix "[SysWarden-BLOCK] [Catch-All] " drop
 EOF
 
         log "INFO" "Populating Nftables sets atomically in chunks (Bypassing memory limits)..."
@@ -959,7 +942,6 @@ EOF
 
         log "INFO" "Applying Atomic Nftables Transaction to the Kernel..."
         nft -f "$TMP_DIR/syswarden.nft"
-        # --------------------------------------------
 
         # --- MODULAR PERSISTENCE (ZERO-TOUCH) ---
         log "INFO" "Saving SysWarden Nftables table to isolated config..."
@@ -975,66 +957,39 @@ EOF
             if ! grep -q 'include "/etc/nftables.d/\*.nft"' "$MAIN_NFT_CONF"; then
                 echo 'include "/etc/nftables.d/*.nft"' >>"$MAIN_NFT_CONF"
             fi
-        else
-            log "WARN" "$MAIN_NFT_CONF not found. Creating basic layout."
-            echo '#!/usr/sbin/nft -f' >"$MAIN_NFT_CONF"
-            echo 'flush ruleset' >>"$MAIN_NFT_CONF"
-            echo 'include "/etc/syswarden/syswarden.nft"' >>"$MAIN_NFT_CONF"
-            chmod 755 "$MAIN_NFT_CONF"
         fi
 
-        # --- NEW DEVSECOPS FIX: ALPINE NATIVE FIREWALL AUTO-BYPASS (WITH WIREGUARD) ---
-        # Alpine's default inet filter table drops everything.
-        # We dynamically inject a drop-in file to open detected essential ports and VPN.
+        # --- NEW DEVSECOPS FIX: IDEMPOTENT ALPINE NATIVE FIREWALL AUTO-BYPASS ---
         log "INFO" "Configuring Native OS Firewall Bypass for active services & VPN..."
         mkdir -p /etc/nftables.d
 
         local OS_BYPASS_FILE="/etc/nftables.d/syswarden-os-bypass.nft"
         echo "table inet filter {" >"$OS_BYPASS_FILE"
-
-        # --- INPUT CHAIN ---
         echo "    chain input {" >>"$OS_BYPASS_FILE"
-
-        # 1. Always guarantee SSH and UI Dashboard are allowed in the native table
         echo "        tcp dport { ${SSH_PORT:-22}, 9999 } accept comment \"SysWarden: Auto-allow SSH & UI\"" >>"$OS_BYPASS_FILE"
 
-        # 2. WireGuard Native OS Bypass
         if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
             echo "        udp dport ${WG_PORT:-51820} accept comment \"SysWarden: WireGuard Port\"" >>"$OS_BYPASS_FILE"
             echo "        iifname \"wg0\" accept comment \"SysWarden: WireGuard Interface\"" >>"$OS_BYPASS_FILE"
-            log "INFO" "OS Bypass: WireGuard (UDP ${WG_PORT:-51820}) integrated into native table."
         fi
 
-        # 3. Dynamic Web Server Auto-Detection (Nginx, Apache)
-        if command -v nginx >/dev/null 2>&1 || command -v apache2 >/dev/null 2>&1 || command -v httpd >/dev/null 2>&1; then
-            echo "        tcp dport { 80, 443 } accept comment \"SysWarden: Auto-allow Web Services\"" >>"$OS_BYPASS_FILE"
-            log "INFO" "OS Bypass: Automatically opened Web Ports (80, 443) in Alpine's native firewall."
+        # Dynamically add all discovered active ports to the native bypass
+        if [[ -n "$ACTIVE_PORTS" ]] && [[ "$ACTIVE_PORTS" != "none" ]]; then
+            echo "        tcp dport { $ACTIVE_PORTS } accept comment \"SysWarden: Auto-allow Discovered Services\"" >>"$OS_BYPASS_FILE"
         fi
 
-        # 4. Extra Management Panels (Optional - Proxmox, Cockpit, etc.)
-        if ss -tulpn 2>/dev/null | grep -qE ':(8080|8443|9090|8006|3000)\b'; then
-            local extra_ports=""
-            for p in 8080 8443 9090 8006 3000; do
-                if ss -tulpn 2>/dev/null | grep -q ":${p}\b"; then extra_ports="${extra_ports}${p}, "; fi
-            done
-            extra_ports=$(echo "$extra_ports" | sed 's/, $//')
-            echo "        tcp dport { $extra_ports } accept comment \"SysWarden: Auto-allow Admin Panels\"" >>"$OS_BYPASS_FILE"
-            log "INFO" "OS Bypass: Automatically opened Custom Panels ($extra_ports)."
-        fi
         echo "    }" >>"$OS_BYPASS_FILE"
 
-        # --- FORWARD CHAIN (For WireGuard VPN Routing) ---
         if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
             echo "    chain forward {" >>"$OS_BYPASS_FILE"
             echo "        iifname \"wg0\" accept comment \"SysWarden: WireGuard Forwarding\"" >>"$OS_BYPASS_FILE"
             echo "        oifname \"wg0\" accept comment \"SysWarden: WireGuard Forwarding\"" >>"$OS_BYPASS_FILE"
             echo "    }" >>"$OS_BYPASS_FILE"
         fi
-
         echo "}" >>"$OS_BYPASS_FILE"
 
-        # Apply the bypass directly to the live kernel
-        nft -f "$OS_BYPASS_FILE" 2>/dev/null || true
+        # DEVSECOPS FIX: Clean reload via OpenRC instead of 'nft -f' to prevent rule duplication
+        rc-service nftables reload >/dev/null 2>&1 || rc-service nftables restart >/dev/null 2>&1 || true
         # -------------------------------------------------------------
 
     else
@@ -3111,7 +3066,9 @@ setup_wireguard() {
     local POSTDOWN=""
 
     if [[ "$FIREWALL_BACKEND" == "nftables" ]]; then
-        POSTUP="nft add table inet syswarden_wg; nft add chain inet syswarden_wg prerouting { type nat hook prerouting priority dstnat \\; }; nft add chain inet syswarden_wg postrouting { type nat hook postrouting priority srcnat \\; }; nft add rule inet syswarden_wg postrouting oifname \"$ACTIVE_IF\" masquerade"
+        # DEVSECOPS FIX: Use single quotes for nft commands to avoid wg-quick shell escaping crashes.
+        # Note: Forwarding rules for wg0 are already handled globally by syswarden-os-bypass.nft on Alpine.
+        POSTUP="nft 'add table inet syswarden_wg'; nft 'add chain inet syswarden_wg prerouting { type nat hook prerouting priority dstnat; }'; nft 'add chain inet syswarden_wg postrouting { type nat hook postrouting priority srcnat; }'; nft 'add rule inet syswarden_wg postrouting oifname \"$ACTIVE_IF\" masquerade'"
         POSTDOWN="nft delete table inet syswarden_wg 2>/dev/null || true"
     else
         POSTUP="iptables -t nat -A POSTROUTING -s $WG_SUBNET -o $ACTIVE_IF -j MASQUERADE; iptables -I FORWARD 1 -i wg0 -j ACCEPT; iptables -I FORWARD 1 -o wg0 -j ACCEPT"
@@ -3323,7 +3280,7 @@ uninstall_syswarden() {
 
     rc-service syswarden-ui stop 2>/dev/null || true
     rc-update del syswarden-ui default 2>/dev/null || true
-    rm -f /etc/init.d/syswarden-ui /usr/local/bin/syswarden-telemetry.sh /usr/local/bin/syswarden-ui-server.py
+    rm -f /etc/init.d/syswarden-ui /usr/local/bin/syswarden-telemetry.sh /usr/local/bin/syswarden-ui-server.py /usr/local/bin/syswarden-ui-sync.sh
     rm -rf /etc/syswarden/ui
     rm -f /var/log/syswarden-audit.log
 
@@ -3345,17 +3302,46 @@ uninstall_syswarden() {
     # Nftables
     if command -v nft >/dev/null; then
         nft delete table inet syswarden_table 2>/dev/null || true
+        # DEVSECOPS FIX: Purge WG NAT table left by PostUp
         nft delete table inet syswarden_wg 2>/dev/null || true
         rm -f /etc/syswarden/syswarden.nft
-        rm -f /etc/nftables.d/syswarden-os-bypass.nft
-        if [[ -f "/etc/nftables.nft" ]]; then
-            sed -i '\|include "/etc/syswarden/syswarden.nft"|d' /etc/nftables.nft
-            sed -i '/# Added by SysWarden/d' /etc/nftables.nft
+
+        # DEVSECOPS FIX: Purge ALL Ghost Rules injected in OS tables (Loops through duplicates)
+        for rule in 'tcp dport 9999 accept' 'udp dport 51820 accept' 'iifname "wg0" accept' 'oifname "wg0" accept'; do
+            # Clean INPUT chain
+            while nft -a list chain inet filter input 2>/dev/null | grep -q "$rule"; do
+                local handle
+                handle=$(nft -a list chain inet filter input 2>/dev/null | grep "$rule" | awk '{print $NF}' | head -n 1)
+                if [[ -n "$handle" ]]; then
+                    nft delete rule inet filter input handle "$handle" 2>/dev/null || true
+                else
+                    break
+                fi
+            done
+            # Clean FORWARD chain
+            while nft -a list chain inet filter forward 2>/dev/null | grep -q "$rule"; do
+                local handle
+                handle=$(nft -a list chain inet filter forward 2>/dev/null | grep "$rule" | awk '{print $NF}' | head -n 1)
+                if [[ -n "$handle" ]]; then
+                    nft delete rule inet filter forward handle "$handle" 2>/dev/null || true
+                else
+                    break
+                fi
+            done
+        done
+
+        if [[ -f "/etc/nftables.conf" ]]; then
+            sed -i '\|include "/etc/syswarden/syswarden.nft"|d' /etc/nftables.conf
+            sed -i '/# Added by SysWarden/d' /etc/nftables.conf
+
+            # DEVSECOPS FIX: Persist the cleaned table!
+            # The installer overwrote this file originally, so we must snapshot the cleaned memory back to it.
+            if grep -q "flush ruleset" /etc/nftables.conf; then
+                echo '#!/usr/sbin/nft -f' >/etc/nftables.conf
+                echo 'flush ruleset' >>/etc/nftables.conf
+                nft list table inet filter >>/etc/nftables.conf 2>/dev/null || true
+            fi
         fi
-        # DEVSECOPS FIX: Purge Ghost Rules injected in OS tables (BusyBox awk compatible)
-        local handle
-        handle=$(nft -a list chain inet filter input 2>/dev/null | grep "tcp dport 9999 accept" | awk '{print $NF}' || true)
-        if [[ -n "$handle" ]]; then nft delete rule inet filter input handle "$handle" 2>/dev/null || true; fi
     fi
 
     # Docker (DOCKER-USER chain)
@@ -3396,12 +3382,18 @@ uninstall_syswarden() {
 
     # 1. Brutal kill of OpenRC services and background loops
     rc-service fail2ban stop 2>/dev/null || true
-    rc-service syswarden-telemetry stop 2>/dev/null || true
+    rc-service syswarden-reporter stop 2>/dev/null || true
+    rc-service syswarden-ui stop 2>/dev/null || true
+
+    # 2. Hunt down any surviving processes or active cron jobs
     pkill -9 fail2ban 2>/dev/null || true
     pkill -9 -f syswarden-telemetry 2>/dev/null || true
-    pkill -9 -f syswarden 2>/dev/null || true
+    pkill -9 -f syswarden_reporter 2>/dev/null || true
+    pkill -9 -f syswarden-ui 2>/dev/null || true
+    pkill -9 -f syswarden-ui-sync 2>/dev/null || true
+    # --------------------------------------------------
 
-    # 2. Destroy the SQLite database
+    # 3. Destroy the SQLite database
     rm -f /var/lib/fail2ban/fail2ban.sqlite3
 
     # 3. Truncate historical logs
@@ -3611,7 +3603,7 @@ setup_wazuh_agent() {
 }
 
 # ==============================================================================
-# SYSWARDEN v1.60 - TELEMETRY BACKEND (SERVERLESS - IP REGISTRY UPDATE)
+# SYSWARDEN v1.61 - TELEMETRY BACKEND (SERVERLESS - IP REGISTRY UPDATE)
 # ==============================================================================
 function setup_telemetry_backend() {
     log "INFO" "Installation of the advanced telemetry engine (Backend)..."
@@ -3775,7 +3767,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v1.60 - NGINX SECURE DASHBOARD (HTTPS / CSP / IP-RESTRICTED)
+# SYSWARDEN v1.61 - NGINX SECURE DASHBOARD (HTTPS / CSP / IP-RESTRICTED)
 # ==============================================================================
 function generate_dashboard() {
     log "INFO" "Generating the Nginx-secured Dashboard UI (HTTPS/CSP/IP-Restricted)..."
@@ -3835,7 +3827,7 @@ function generate_dashboard() {
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center gap-3">
                     <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.7)]" id="status-indicator"></div>
-                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v1.60</span></h1>
+                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v1.61</span></h1>
                 </div>
                 
                 <div class="flex items-center gap-2 bg-gray-100 dark:bg-dark-900 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
@@ -4809,7 +4801,7 @@ if [[ "$MODE" != "update" ]]; then
         CYAN='\033[0;36m'
         clear
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
-        echo -e "${GREEN}${BOLD}                   SYSWARDEN v1.60 - PRE-FLIGHT CHECKLIST                     ${NC}"
+        echo -e "${GREEN}${BOLD}                   SYSWARDEN v1.61 - PRE-FLIGHT CHECKLIST                     ${NC}"
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
         echo -e "Before proceeding with the deployment, please ensure you have the following"
         echo -e "information ready. If you lack any required data, press [Ctrl+C] to abort,"

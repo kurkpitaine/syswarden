@@ -33,7 +33,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v1.60"
+VERSION="v1.61"
 ACTIVE_PORTS=""
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
@@ -1046,26 +1046,23 @@ EOF
 EOF
         fi
 
-        # 3. Rebuild the Chains and Rules
+        # --- DEVSECOPS FIX: THE PRIORITY SANDWICH ARCHITECTURE ---
+        # 3. FRONTLINE CHAIN (Executes BEFORE Fail2ban at priority -10)
         cat <<EOF >>"$TMP_DIR/syswarden.nft"
-    chain input {
+    chain input_frontline {
         type filter hook input priority filter - 10; policy accept;
         ct state established,related accept
 EOF
 
-        # --- FIX DEVSECOPS: WHITELIST MUST BE EVALUATED BEFORE ANY DROPS ---
-        # Evaluated immediately after established connections to prevent admin lockout.
         if [[ -s "$WHITELIST_FILE" ]]; then
             while IFS= read -r wl_ip; do
                 [[ -z "$wl_ip" ]] && continue
                 echo "        ip saddr $wl_ip accept" >>"$TMP_DIR/syswarden.nft"
             done <"$WHITELIST_FILE"
         fi
-        # -------------------------------------------------------------------
 
         if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
             echo "        udp dport ${WG_PORT:-51820} accept" >>"$TMP_DIR/syswarden.nft"
-            # DEVSECOPS FIX: Global Trust for the VPN Interface (Fixes Ping, DNS, and internal routing)
             echo "        iifname { \"wg0\", \"lo\" } accept comment \"SysWarden: Global Trust for VPN\"" >>"$TMP_DIR/syswarden.nft"
             echo "        tcp dport ${SSH_PORT:-22} log prefix \"[SysWarden-SSH-DROP] \" drop" >>"$TMP_DIR/syswarden.nft"
         fi
@@ -1080,18 +1077,35 @@ EOF
 
         cat <<EOF >>"$TMP_DIR/syswarden.nft"
         ip saddr @$SET_NAME log prefix "[SysWarden-BLOCK] " drop
+    }
+
+    # 4. BACKEND CHAIN (Executes AFTER Fail2ban at priority 10)
+    # Serves as the Zero-Trust Catch-All, allowing legitimate traffic first.
+    chain input_backend {
+        type filter hook input priority filter + 10; policy drop;
+        ct state established,related accept
+        iifname "lo" accept
+        ip protocol icmp accept
+        meta l4proto ipv6-icmp accept
 EOF
 
         # --- ZERO TRUST: DYNAMIC ALLOW & CATCH-ALL DROP ---
         if [[ -n "$ACTIVE_PORTS" ]] && [[ "$ACTIVE_PORTS" != "none" ]]; then
-            # Re-allow the custom SSH port explicitly just in case it wasn't caught by ss
             echo "        tcp dport { ${SSH_PORT:-22}, 9999, $ACTIVE_PORTS } accept" >>"$TMP_DIR/syswarden.nft"
         else
             echo "        tcp dport { ${SSH_PORT:-22}, 9999 } accept" >>"$TMP_DIR/syswarden.nft"
         fi
 
+        # --- DEVSECOPS FIX: WG BACKEND SURVIVAL ---
+        # WG traffic explicitly allowed in Frontline must ALSO be allowed in the Zero-Trust Backend
+        if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
+            echo "        udp dport ${WG_PORT:-51820} accept" >>"$TMP_DIR/syswarden.nft"
+            echo "        iifname { \"wg0\", \"lo\" } accept" >>"$TMP_DIR/syswarden.nft"
+        fi
+        # ------------------------------------------
+
         cat <<EOF >>"$TMP_DIR/syswarden.nft"
-        # The Catch-All Drop: Any packet reaching this line is unauthorized probing
+        # The Catch-All Drop: Any packet surviving Frontline and Fail2ban hits this.
         log prefix "[SysWarden-BLOCK] [Catch-All] " drop
     }
 }
@@ -1210,7 +1224,7 @@ EOF
             # 3. Allow WireGuard UDP port for tunnel establishment
             firewall-cmd --permanent --add-port="${WG_PORT:-51820}/udp" >/dev/null 2>&1 || true
 
-            # --- STRICT ZERO TRUST HIERARCHY (v1.60) - DEBIAN PARITY) ---
+            # --- STRICT ZERO TRUST HIERARCHY (v1.61) - DEBIAN PARITY) ---
 
             # Priority -1000: Highest priority. Allow SSH & Dashboard strictly from VPN.
             firewall-cmd --permanent --add-rich-rule="rule priority='-1000' family='ipv4' source address='${WG_SUBNET}' port port='${SSH_PORT:-22}' protocol='tcp' accept" >/dev/null 2>&1 || true
@@ -3322,9 +3336,10 @@ setup_wireguard() {
     case "$FIREWALL_BACKEND" in
         "nftables")
             # NATIVE DEBIAN/UBUNTU
-            # DEVSECOPS FIX: Use strict aliases (dstnat/srcnat) to prevent wg-quick crash on modern kernels
-            POSTUP="nft add table inet syswarden_wg; nft add chain inet syswarden_wg prerouting { type nat hook prerouting priority dstnat \\; }; nft add chain inet syswarden_wg postrouting { type nat hook postrouting priority srcnat \\; }; nft add rule inet syswarden_wg postrouting oifname \"$ACTIVE_IF\" masquerade"
-            POSTDOWN="nft delete table inet syswarden_wg 2>/dev/null || true"
+            # DEVSECOPS FIX: We use single quotes around nft commands to avoid \' escaping issues in wg-quick.
+            # We also explicitly inject FORWARD rules to allow internet access through the VPN.
+            POSTUP="nft 'add table inet syswarden_wg'; nft 'add chain inet syswarden_wg prerouting { type nat hook prerouting priority dstnat; }'; nft 'add chain inet syswarden_wg postrouting { type nat hook postrouting priority srcnat; }'; nft 'add rule inet syswarden_wg postrouting oifname \"$ACTIVE_IF\" masquerade'; nft 'add chain inet filter forward { type filter hook forward priority 0; }' 2>/dev/null || true; nft 'insert rule inet filter forward iifname \"wg0\" accept'; nft 'insert rule inet filter forward oifname \"wg0\" accept'"
+            POSTDOWN="nft delete table inet syswarden_wg 2>/dev/null || true; nft delete rule inet filter forward iifname \"wg0\" accept 2>/dev/null || true; nft delete rule inet filter forward oifname \"wg0\" accept 2>/dev/null || true"
             ;;
         "firewalld")
             # --- FIX ALMA/RHEL 10: NATIVE FIREWALLD ROUTING ---
@@ -3871,7 +3886,9 @@ uninstall_syswarden() {
     # --- DEVSECOPS FIX: GLOBAL ZOMBIE PROCESS PURGE ---
     log "INFO" "Terminating all SysWarden background processes..."
     pkill -9 -f syswarden-telemetry 2>/dev/null || true
-    pkill -9 -f syswarden 2>/dev/null || true
+    pkill -9 -f syswarden_reporter 2>/dev/null || true
+    pkill -9 -f syswarden-ui 2>/dev/null || true
+    pkill -9 -f syswarden-ui-sync 2>/dev/null || true
     # --------------------------------------------------
 
     # 1. Stop & Remove Reporter Service
@@ -3885,7 +3902,7 @@ uninstall_syswarden() {
 
     log "INFO" "Removing UI Dashboard Service & Audit Tools..."
     systemctl disable --now syswarden-ui 2>/dev/null || true
-    rm -f /etc/systemd/system/syswarden-ui.service /usr/local/bin/syswarden-telemetry.sh /usr/local/bin/syswarden-ui-server.py
+    rm -f /etc/systemd/system/syswarden-ui.service /usr/local/bin/syswarden-telemetry.sh /usr/local/bin/syswarden-ui-server.py /usr/local/bin/syswarden-ui-sync.sh
     rm -rf /etc/syswarden/ui
     rm -f /var/log/syswarden-audit.log
 
@@ -3946,14 +3963,43 @@ uninstall_syswarden() {
         # DEVSECOPS FIX: Purge WG NAT table left by PostUp
         nft delete table inet syswarden_wg 2>/dev/null || true
         rm -f /etc/syswarden/syswarden.nft
+
+        # DEVSECOPS FIX: Purge ALL Ghost Rules injected in OS tables (Loops through duplicates)
+        for rule in 'tcp dport 9999 accept' 'udp dport 51820 accept' 'iifname "wg0" accept' 'oifname "wg0" accept'; do
+            # Clean INPUT chain
+            while nft -a list chain inet filter input 2>/dev/null | grep -q "$rule"; do
+                local handle
+                handle=$(nft -a list chain inet filter input 2>/dev/null | grep "$rule" | awk '{print $NF}' | head -n 1)
+                if [[ -n "$handle" ]]; then
+                    nft delete rule inet filter input handle "$handle" 2>/dev/null || true
+                else
+                    break
+                fi
+            done
+            # Clean FORWARD chain
+            while nft -a list chain inet filter forward 2>/dev/null | grep -q "$rule"; do
+                local handle
+                handle=$(nft -a list chain inet filter forward 2>/dev/null | grep "$rule" | awk '{print $NF}' | head -n 1)
+                if [[ -n "$handle" ]]; then
+                    nft delete rule inet filter forward handle "$handle" 2>/dev/null || true
+                else
+                    break
+                fi
+            done
+        done
+
         if [[ -f "/etc/nftables.conf" ]]; then
             sed -i '\|include "/etc/syswarden/syswarden.nft"|d' /etc/nftables.conf
             sed -i '/# Added by SysWarden/d' /etc/nftables.conf
+
+            # DEVSECOPS FIX: Persist the cleaned table!
+            # The installer overwrote this file originally, so we must snapshot the cleaned memory back to it.
+            if grep -q "flush ruleset" /etc/nftables.conf; then
+                echo '#!/usr/sbin/nft -f' >/etc/nftables.conf
+                echo 'flush ruleset' >>/etc/nftables.conf
+                nft list table inet filter >>/etc/nftables.conf 2>/dev/null || true
+            fi
         fi
-        # DEVSECOPS FIX: Purge Ghost Rules injected in OS tables
-        local handle
-        handle=$(nft -a list chain inet filter input 2>/dev/null | grep "tcp dport 9999 accept" | grep -oP 'handle \K[0-9]+' || true)
-        if [[ -n "$handle" ]]; then nft delete rule inet filter input handle "$handle" 2>/dev/null || true; fi
     fi
 
     if [[ -f "/etc/ufw/before.rules" ]]; then
@@ -3988,10 +4034,24 @@ uninstall_syswarden() {
             while iptables -D DOCKER-USER -m set --match-set "$ASN_SET_NAME" src -j LOG --log-prefix "[SysWarden-ASN] " 2>/dev/null; do :; done
             while iptables -D DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN 2>/dev/null; do :; done
         fi
-        # IPtables Standard
+
+        # IPtables Standard (Purge des IPsets)
         while iptables -D INPUT -m set --match-set "$SET_NAME" src -j DROP 2>/dev/null; do :; done
         while iptables -D INPUT -m set --match-set "$GEOIP_SET_NAME" src -j DROP 2>/dev/null; do :; done
         while iptables -D INPUT -m set --match-set "$ASN_SET_NAME" src -j DROP 2>/dev/null; do :; done
+
+        # --- DEVSECOPS FIX: IPTABLES-NFT GHOST RULE PURGE ---
+        # We must explicitly delete old dynamically injected ports using the exact iptables syntax
+        # so the iptables-nft translation layer can find and destroy them properly.
+        log "INFO" "Purging translated iptables-nft ghost rules..."
+        while iptables -D INPUT -p tcp --dport 9999 -j ACCEPT 2>/dev/null; do :; done
+        while iptables -D INPUT -p udp --dport "${WG_PORT:-51820}" -j ACCEPT 2>/dev/null; do :; done
+        while iptables -D INPUT -i wg0 -j ACCEPT 2>/dev/null; do :; done
+        while iptables -D FORWARD -i wg0 -j ACCEPT 2>/dev/null; do :; done
+        while iptables -D FORWARD -o wg0 -j ACCEPT 2>/dev/null; do :; done
+        while iptables -D INPUT -j DROP 2>/dev/null; do :; done
+        while iptables -D INPUT -j LOG --log-prefix "[SysWarden-BLOCK] [Catch-All] " 2>/dev/null; do :; done
+        # ----------------------------------------------------
     fi
 
     # IPSet Cleanup
@@ -4334,7 +4394,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v1.60 - TELEMETRY BACKEND (SERVERLESS - IP REGISTRY UPDATE)
+# SYSWARDEN v1.61 - TELEMETRY BACKEND (SERVERLESS - IP REGISTRY UPDATE)
 # ==============================================================================
 function setup_telemetry_backend() {
     log "INFO" "Installation of the advanced telemetry engine (Backend)..."
@@ -4499,7 +4559,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v1.60 - NGINX SECURE DASHBOARD (HTTPS / CSP / IP-RESTRICTED)
+# SYSWARDEN v1.61 - NGINX SECURE DASHBOARD (HTTPS / CSP / IP-RESTRICTED)
 # ==============================================================================
 function generate_dashboard() {
     log "INFO" "Generating the Nginx-secured Dashboard UI (HTTPS/CSP/IP-Restricted)..."
@@ -4561,7 +4621,7 @@ function generate_dashboard() {
             <div class="flex justify-between h-16 items-center">
                 <div class="flex items-center gap-3">
                     <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.7)]" id="status-indicator"></div>
-                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v1.60</span></h1>
+                    <h1 class="text-xl font-bold tracking-tight">SysWarden <span class="text-brand-500">v1.61</span></h1>
                 </div>
                 
                 <div class="flex items-center gap-2 bg-gray-100 dark:bg-dark-900 p-1 rounded-lg border border-gray-200 dark:border-gray-700">
@@ -5606,7 +5666,7 @@ fi
 if [[ "$MODE" != "update" ]]; then
     clear
     echo -e "${GREEN}#############################################################"
-    echo -e "#     SysWarden Tool Installer (Universal v1.60)     #"
+    echo -e "#     SysWarden Tool Installer (Universal v1.61)     #"
     echo -e "#############################################################${NC}"
 fi
 
@@ -5643,7 +5703,7 @@ if [[ "$MODE" != "update" ]]; then
         CYAN='\033[0;36m'
         clear
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
-        echo -e "${GREEN}${BOLD}                   SYSWARDEN v1.60 - PRE-FLIGHT CHECKLIST                     ${NC}"
+        echo -e "${GREEN}${BOLD}                   SYSWARDEN v1.61 - PRE-FLIGHT CHECKLIST                     ${NC}"
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
         echo -e "Before proceeding with the deployment, please ensure you have the following"
         echo -e "information ready. If you lack any required data, press [Ctrl+C] to abort,"
