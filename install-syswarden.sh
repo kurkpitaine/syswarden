@@ -33,7 +33,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v1.64"
+VERSION="v1.65"
 ACTIVE_PORTS=""
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
@@ -1224,7 +1224,7 @@ EOF
             # 3. Allow WireGuard UDP port for tunnel establishment
             firewall-cmd --permanent --add-port="${WG_PORT:-51820}/udp" >/dev/null 2>&1 || true
 
-            # --- STRICT ZERO TRUST HIERARCHY (v1.64) - DEBIAN PARITY) ---
+            # --- STRICT ZERO TRUST HIERARCHY (v1.65) - DEBIAN PARITY) ---
 
             # Priority -1000: Highest priority. Allow SSH & Dashboard strictly from VPN.
             firewall-cmd --permanent --add-rich-rule="rule priority='-1000' family='ipv4' source address='${WG_SUBNET}' port port='${SSH_PORT:-22}' protocol='tcp' accept" >/dev/null 2>&1 || true
@@ -4402,7 +4402,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v1.64 - TELEMETRY BACKEND (SERVERLESS - IP REGISTRY UPDATE)
+# SYSWARDEN v1.65 - TELEMETRY BACKEND (SERVERLESS - IP REGISTRY UPDATE)
 # ==============================================================================
 function setup_telemetry_backend() {
     log "INFO" "Installation of the advanced telemetry engine (Backend)..."
@@ -4567,7 +4567,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v1.64 - NGINX SECURE DASHBOARD (HTTPS / CSP / LOCAL FONTS)
+# SYSWARDEN v1.65 - NGINX SECURE DASHBOARD (HTTPS / CSP / LOCAL FONTS)
 # ==============================================================================
 function generate_dashboard() {
     log "INFO" "Generating the Nginx-secured Dashboard UI (HTTPS/CSP/Local-Fonts)..."
@@ -4758,7 +4758,7 @@ function generate_dashboard() {
         <div class="container flex-between">
             <div class="flex-align">
                 <div class="status-dot" id="status-indicator"></div>
-                <h1 style="font-size: 1.25rem; font-weight: bold;">SysWarden <span class="text-brand">v1.64</span></h1>
+                <h1 style="font-size: 1.25rem; font-weight: bold;">SysWarden <span class="text-brand">v1.65</span></h1>
             </div>
             <div class="theme-controls">
                 <button onclick="setTheme('light')" class="theme-btn">Light</button>
@@ -5190,8 +5190,11 @@ EOF
 
     cat <<EOF >"$NGINX_CONF_DIR/syswarden-ui.conf"
 server {
-    listen 9999 ssl;
-    http2 on;
+    # --- DEVSECOPS FIX: NGINX 1.24+ / UBUNTU 24.04 COMPATIBILITY ---
+    # The standalone 'http2 on;' directive is deprecated and causes fatal 
+    # syntax errors in modern Nginx versions. It must be declared directly 
+    # within the listen directive to ensure Cross-OS parity.
+    listen 9999 ssl http2;
     server_name _;
 
     # TLS Encryption
@@ -5794,7 +5797,7 @@ fi
 if [[ "$MODE" != "update" ]]; then
     clear
     echo -e "${GREEN}#############################################################"
-    echo -e "#     SysWarden Tool Installer (Universal v1.64)     #"
+    echo -e "#     SysWarden Tool Installer (Universal v1.65)     #"
     echo -e "#############################################################${NC}"
 fi
 
@@ -5831,7 +5834,7 @@ if [[ "$MODE" != "update" ]]; then
         CYAN='\033[0;36m'
         clear
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
-        echo -e "${GREEN}${BOLD}                   SYSWARDEN v1.64 - PRE-FLIGHT CHECKLIST                     ${NC}"
+        echo -e "${GREEN}${BOLD}                   SYSWARDEN v1.65 - PRE-FLIGHT CHECKLIST                     ${NC}"
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
         echo -e "Before proceeding with the deployment, please ensure you have the following"
         echo -e "information ready. If you lack any required data, press [Ctrl+C] to abort,"

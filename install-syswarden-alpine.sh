@@ -42,7 +42,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v1.64"
+VERSION="v1.65"
 ACTIVE_PORTS=""
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
@@ -3599,7 +3599,7 @@ setup_wazuh_agent() {
 }
 
 # ==============================================================================
-# SYSWARDEN v1.64 - TELEMETRY BACKEND (SERVERLESS - IP REGISTRY UPDATE)
+# SYSWARDEN v1.65 - TELEMETRY BACKEND (SERVERLESS - IP REGISTRY UPDATE)
 # ==============================================================================
 function setup_telemetry_backend() {
     log "INFO" "Installation of the advanced telemetry engine (Backend)..."
@@ -3763,7 +3763,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v1.64 - NGINX SECURE DASHBOARD (HTTPS / CSP / LOCAL FONTS)
+# SYSWARDEN v1.65 - NGINX SECURE DASHBOARD (HTTPS / CSP / LOCAL FONTS)
 # ==============================================================================
 function generate_dashboard() {
     log "INFO" "Generating the Nginx-secured Dashboard UI (HTTPS/CSP/Local-Fonts)..."
@@ -3954,7 +3954,7 @@ function generate_dashboard() {
         <div class="container flex-between">
             <div class="flex-align">
                 <div class="status-dot" id="status-indicator"></div>
-                <h1 style="font-size: 1.25rem; font-weight: bold;">SysWarden <span class="text-brand">v1.64</span></h1>
+                <h1 style="font-size: 1.25rem; font-weight: bold;">SysWarden <span class="text-brand">v1.65</span></h1>
             </div>
             <div class="theme-controls">
                 <button onclick="setTheme('light')" class="theme-btn">Light</button>
@@ -4381,8 +4381,10 @@ EOF
     log "INFO" "Configuring Nginx reverse proxy for port 9999..."
     cat <<EOF >/etc/nginx/http.d/syswarden-ui.conf
 server {
-    listen 9999 ssl;
-    http2 on;
+    # --- DEVSECOPS FIX: CROSS-OS NGINX COMPATIBILITY ---
+    # Using 'listen ... http2' instead of 'http2 on;' ensures compatibility
+    # with older Nginx versions (<1.25.1) while remaining functional (with a warning) on modern versions.
+    listen 9999 ssl http2;
     server_name _;
 
     # TLS Encryption
@@ -4910,7 +4912,7 @@ if [[ "$MODE" != "update" ]]; then
         CYAN='\033[0;36m'
         clear
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
-        echo -e "${GREEN}${BOLD}                   SYSWARDEN v1.64 - PRE-FLIGHT CHECKLIST                     ${NC}"
+        echo -e "${GREEN}${BOLD}                   SYSWARDEN v1.65 - PRE-FLIGHT CHECKLIST                     ${NC}"
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
         echo -e "Before proceeding with the deployment, please ensure you have the following"
         echo -e "information ready. If you lack any required data, press [Ctrl+C] to abort,"
