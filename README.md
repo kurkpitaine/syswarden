@@ -191,7 +191,7 @@ For Universal OS (Debian / Ubuntu / RHEL ecosystem):
 
 ```bash
 cd /usr/local/bin/
-wget https://github.com/duggytuxy/syswarden/releases/download/v1.69/install-syswarden.sh
+wget https://github.com/duggytuxy/syswarden/releases/download/v1.70/install-syswarden.sh
 chmod +x install-syswarden.sh
 ./install-syswarden.sh
 ```
@@ -200,7 +200,7 @@ For Alpine Linux (OpenRC):
 
 ```bash
 cd /usr/local/bin/
-wget https://github.com/duggytuxy/syswarden/releases/download/v1.69/install-syswarden-alpine.sh
+wget https://github.com/duggytuxy/syswarden/releases/download/v1.70/install-syswarden-alpine.sh
 chmod +x install-syswarden-alpine.sh
 ./install-syswarden-alpine.sh
 ```
@@ -219,7 +219,7 @@ Paste the following configuration into the file (exemple:)
 
 ```
 # ==============================================================================
-# Version=v1.69
+# Version=v1.70
 # SYSWARDEN UNATTENDED INSTALLATION CONFIGURATION
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -326,7 +326,7 @@ The dashboard is completely locked down at the web server level. Even though por
 * **Scenario B: Direct Public Access**
   During installation, the orchestrator automatically detects and whitelists your current Admin SSH IP address. You can access the dashboard directly over the internet from this specific IP. 
   
-  *If your public IP changes (e.g., dynamic residential IP or moving to a café), you will be locked out. You must explicitly authorize your new public IP using the management CLI: `syswarden-mng whitelist <NEW_IP>` followed by `syswarden-mng reload` to synchronize Nginx.*
+  *If your public IP changes (e.g., dynamic residential IP or moving to a café), you will be locked out. You must explicitly authorize your new public IP using the management CLI: `syswarden-manager.sh whitelist <NEW_IP>` followed by `syswarden-manager.sh reload` to synchronize Nginx.*
 
 ### 5. CLI Orchestration Commands
 
@@ -398,14 +398,14 @@ Once installed, SysWarden acts as a standalone CLI tool. You can manage your inf
 
 > Fetches the latest SysWarden architecture from the repository and performs a seamless hot-reload without dropping active connections.
 
-### 6. Day-to-Day Operations (syswarden-mng)
+### 6. Day-to-Day Operations (syswarden-manager.sh)
 
-SysWarden includes a dedicated, secure Command Line Interface for daily firewall management. `syswarden-mng` allows administrators to hot-swap rules across all security layers (Persistence, Kernel Firewall, and Fail2ban) without requiring a full system reload.
+SysWarden includes a dedicated, secure Command Line Interface for daily firewall management. `syswarden-manager.sh` allows administrators to hot-swap rules across all security layers (Persistence, Kernel Firewall, and Fail2ban) without requiring a full system reload.
 
 #### Management Commands
 
 ```bash
-syswarden-mng [COMMAND] [IP]
+syswarden-manager.sh [COMMAND] [IP]
 ```
 
 - **`check <IP>`**: Performs a full XDR diagnostic of an IP across local storage, Layer 3 (Kernel Firewall), and Layer 7 (Fail2ban jails).

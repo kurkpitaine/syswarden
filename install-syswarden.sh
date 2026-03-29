@@ -33,7 +33,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v1.69"
+VERSION="v1.70"
 ACTIVE_PORTS=""
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
@@ -1155,20 +1155,20 @@ EOF
             if nft list table inet filter >/dev/null 2>&1; then
                 # 1. Open UDP port and allow wg0 interface in OS default input chain
                 if nft list chain inet filter input >/dev/null 2>&1; then
-                    # DEVSECOPS FIX: Flexible Regex to bypass nftables memory reformatting (quotes/spaces)
-                    if ! nft list chain inet filter input 2>/dev/null | grep -qE "udp[[:space:]]+dport[[:space:]]+${WG_PORT:-51820}[[:space:]]+accept"; then
+                    # DEVSECOPS FIX: grep >/dev/null prevents SIGPIPE pipefail crashes that cause ghost duplicates
+                    if ! nft list chain inet filter input 2>/dev/null | grep -E "udp[[:space:]]+dport[[:space:]]+${WG_PORT:-51820}[[:space:]]+accept" >/dev/null; then
                         nft insert rule inet filter input udp dport "${WG_PORT:-51820}" accept 2>/dev/null || true
                     fi
-                    if ! nft list chain inet filter input 2>/dev/null | grep -qE "iifname[[:space:]]+[\"']?wg0[\"']?[[:space:]]+accept"; then
+                    if ! nft list chain inet filter input 2>/dev/null | grep -E "iifname[[:space:]]+[\"']?wg0[\"']?[[:space:]]+accept" >/dev/null; then
                         nft insert rule inet filter input iifname "wg0" accept 2>/dev/null || true
                     fi
                 fi
                 # 2. Allow IP Forwarding for the VPN tunnel (Idempotent)
                 if nft list chain inet filter forward >/dev/null 2>&1; then
-                    if ! nft list chain inet filter forward 2>/dev/null | grep -qE "iifname[[:space:]]+[\"']?wg0[\"']?[[:space:]]+accept"; then
+                    if ! nft list chain inet filter forward 2>/dev/null | grep -E "iifname[[:space:]]+[\"']?wg0[\"']?[[:space:]]+accept" >/dev/null; then
                         nft insert rule inet filter forward iifname "wg0" accept 2>/dev/null || true
                     fi
-                    if ! nft list chain inet filter forward 2>/dev/null | grep -qE "oifname[[:space:]]+[\"']?wg0[\"']?[[:space:]]+accept"; then
+                    if ! nft list chain inet filter forward 2>/dev/null | grep -E "oifname[[:space:]]+[\"']?wg0[\"']?[[:space:]]+accept" >/dev/null; then
                         nft insert rule inet filter forward oifname "wg0" accept 2>/dev/null || true
                     fi
                 fi
@@ -1240,7 +1240,7 @@ EOF
             # 3. Allow WireGuard UDP port for tunnel establishment
             firewall-cmd --permanent --add-port="${WG_PORT:-51820}/udp" >/dev/null 2>&1 || true
 
-            # --- STRICT ZERO TRUST HIERARCHY (v1.69) - DEBIAN PARITY) ---
+            # --- STRICT ZERO TRUST HIERARCHY (v1.70) - DEBIAN PARITY) ---
 
             # Priority -1000: Highest priority. Allow SSH & Dashboard strictly from VPN.
             firewall-cmd --permanent --add-rich-rule="rule priority='-1000' family='ipv4' source address='${WG_SUBNET}' port port='${SSH_PORT:-22}' protocol='tcp' accept" >/dev/null 2>&1 || true
@@ -4433,7 +4433,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v1.69 - TELEMETRY BACKEND (SERVERLESS - IP REGISTRY UPDATE)
+# SYSWARDEN v1.70 - TELEMETRY BACKEND (SERVERLESS - IP REGISTRY UPDATE)
 # ==============================================================================
 function setup_telemetry_backend() {
     log "INFO" "Installation of the advanced telemetry engine (Backend)..."
@@ -4584,7 +4584,7 @@ EOF
     chmod +x "$BIN_PATH"
 
     # 3. Injection into CRON tasks (Execution every minute)
-    if ! crontab -l 2>/dev/null | grep -q "$BIN_PATH"; then
+    if ! crontab -l 2>/dev/null | grep "$BIN_PATH" >/dev/null; then
         (
             crontab -l 2>/dev/null || true
             echo "* * * * * $BIN_PATH >/dev/null 2>&1"
@@ -4598,7 +4598,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v1.69 - NGINX SECURE DASHBOARD (HTTPS / CSP / LOCAL FONTS / BENTO-DARK)
+# SYSWARDEN v1.70 - NGINX SECURE DASHBOARD (HTTPS / CSP / LOCAL FONTS / BENTO-DARK)
 # ==============================================================================
 function generate_dashboard() {
     log "INFO" "Generating the Nginx-secured Dashboard UI (HTTPS/CSP/Local-Fonts)..."
@@ -4831,7 +4831,7 @@ function generate_dashboard() {
         <div class="container flex-between">
             <div class="flex-align">
                 <h1 style="font-size: 1.3rem; font-weight: bold; letter-spacing: -0.05em; display: flex; align-items: flex-start;">
-                    SYSWARDEN&nbsp;<span class="text-brand">v1.69</span>
+                    SYSWARDEN&nbsp;<span class="text-brand">v1.70</span>
                     <div class="syswarden-pulse"></div>
                 </h1>
             </div>
@@ -5346,7 +5346,8 @@ EOF
         fi
     elif [[ "$FIREWALL_BACKEND" == "nftables" ]]; then
         if nft list chain inet filter input >/dev/null 2>&1; then
-            if ! nft list chain inet filter input 2>/dev/null | grep -q "tcp dport 9999 accept"; then
+            # DEVSECOPS FIX: grep >/dev/null prevents SIGPIPE pipefail crashes
+            if ! nft list chain inet filter input 2>/dev/null | grep "tcp dport 9999 accept" >/dev/null; then
                 nft insert rule inet filter input tcp dport 9999 accept 2>/dev/null || true
                 # DEVSECOPS FIX: OS Persistence
                 echo '#!/usr/sbin/nft -f' >/etc/nftables.conf
@@ -5887,7 +5888,7 @@ fi
 if [[ "$MODE" != "update" ]]; then
     clear
     echo -e "${GREEN}#############################################################"
-    echo -e "#     SysWarden Tool Installer (Universal v1.69)     #"
+    echo -e "#     SysWarden Tool Installer (Universal v1.70)     #"
     echo -e "#############################################################${NC}"
 fi
 
@@ -5924,7 +5925,7 @@ if [[ "$MODE" != "update" ]]; then
         CYAN='\033[0;36m'
         clear
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
-        echo -e "${GREEN}${BOLD}                   SYSWARDEN v1.69 - PRE-FLIGHT CHECKLIST                     ${NC}"
+        echo -e "${GREEN}${BOLD}                   SYSWARDEN v1.70 - PRE-FLIGHT CHECKLIST                     ${NC}"
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
         echo -e "Before proceeding with the deployment, please ensure you have the following"
         echo -e "information ready. If you lack any required data, press [Ctrl+C] to abort,"
