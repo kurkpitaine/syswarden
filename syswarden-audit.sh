@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# SysWarden v1.79 - DevSecOps Audit & Compliance Tool
+# SysWarden v1.80 - DevSecOps Audit & Compliance Tool
 # Copyright (C) 2026 duggytuxy - Laurent M.
 #
 # This program is free software: you can redistribute it and/or modify
@@ -268,7 +268,7 @@ else
     fail "SysWarden firewall rules not found in kernel space."
 fi
 
-# --- Verify Catch-All Drop Policy (v1.79 Zero Trust Architecture) ---
+# --- Verify Catch-All Drop Policy (v1.80 Zero Trust Architecture) ---
 CATCH_ALL_PASSED=0
 if [[ "$FW_ENGINE" == "Nftables" ]]; then
     # 1. Debian Architecture (Explicit Catch-All rule in backend chain)
@@ -698,7 +698,7 @@ if [[ "$FW_ENGINE" == "Nftables" ]]; then
 elif [[ "$FW_ENGINE" == "Iptables" || "$FW_ENGINE" == "UFW" || "$FW_ENGINE" == "Firewalld" ]]; then
     if command -v iptables >/dev/null 2>&1; then
         DUP_9999=$(iptables -S INPUT 2>/dev/null | { grep "\--dport 9999 -j ACCEPT" || true; } | wc -l)
-        DUP_SSH=$(iptables -S INPUT 2>/dev/null | { grep "\--dport ${SSH_PORT:-22} -j ACCEPT" || true; } | grep -v "\-s" | wc -l)
+        DUP_SSH=$(iptables -S INPUT 2>/dev/null | { grep "\--dport ${SSH_PORT:-22} -j ACCEPT" || true; } | { grep -v "\-s" || true; } | wc -l)
 
         if [[ "$DUP_9999" -gt 1 ]]; then
             GHOST_DETECTED=1
