@@ -33,7 +33,8 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v1.77"
+# shellcheck disable=SC2034
+VERSION="v1.78"
 ACTIVE_PORTS=""
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
@@ -352,6 +353,7 @@ auto_whitelist_admin() {
 
 select_list_type() {
     if [[ "${1:-}" == "update" ]] && [[ -f "$CONF_FILE" ]]; then
+        # shellcheck source=/dev/null
         source "$CONF_FILE"
         return
     fi
@@ -431,6 +433,7 @@ measure_latency() {
 
 select_mirror() {
     if [[ "${1:-}" == "update" ]] && [[ -f "$CONF_FILE" ]]; then
+        # shellcheck source=/dev/null
         source "$CONF_FILE"
         return
     fi
@@ -801,7 +804,7 @@ EOF
             f2b_ignoreip="$f2b_ignoreip $wl_ips"
         fi
 
-        # Slackware relies heavily on polling/auto due to missing systemd
+        # Slackware uses syslogd (messages, secure) and auto/polling backend natively
         cat <<EOF >/etc/fail2ban/jail.local
 [DEFAULT]
 bantime = 4h
@@ -839,7 +842,7 @@ ignoreregex = ^.*(?:fail2ban\.actions|fail2ban\.filter).*\[[a-zA-Z0-9_-]+\] (?:R
 EOF
         fi
 
-        # ALL 46 JAILS PORTED FROM UNIVERSAL v1.77 FOR SLACKWARE
+        # ALL 46 JAILS PORTED FROM UNIVERSAL v1.76 FOR SLACKWARE
 
         # 4. DYNAMIC DETECTION: NGINX
         if [[ -f "/var/log/nginx/access.log" ]] || [[ -f "/var/log/nginx/error.log" ]]; then
@@ -1833,6 +1836,7 @@ EOF
                 if [[ -z "$TELNET_LOG" ]]; then
                     TELNET_LOG="$log_file"
                 else
+                    # shellcheck disable=SC1003
                     TELNET_LOG+=$'\n          '"$log_file"
                 fi
             fi
@@ -1955,6 +1959,20 @@ EOF
         echo "if [ -x /etc/rc.d/rc.wireguard ]; then /etc/rc.d/rc.wireguard start; fi" >>/etc/rc.d/rc.local
     fi
     /etc/rc.d/rc.wireguard start 2>/dev/null || true
+}
+
+display_wireguard_qr() {
+    if [[ "${USE_WIREGUARD:-n}" == "y" ]] && [[ -f "/etc/wireguard/clients/admin-pc.conf" ]]; then
+        echo -e "\n${RED}========================================================================${NC}"
+        echo -e "${YELLOW}           WIREGUARD MANAGEMENT VPN - SCAN TO CONNECT${NC}"
+        echo -e "${RED}========================================================================${NC}\n"
+        if command -v qrencode >/dev/null; then
+            qrencode -t ansiutf8 </etc/wireguard/clients/admin-pc.conf
+        else
+            echo -e "${YELLOW}[!] qrencode not installed. Cannot display QR code. Please copy config manually.${NC}"
+        fi
+        echo -e "\n${GREEN}[✔] Client Configuration File Saved At:${NC} /etc/wireguard/clients/admin-pc.conf"
+    fi
 }
 
 setup_abuse_reporting() {
@@ -2369,7 +2387,7 @@ generate_dashboard() {
         <div class="container flex-between">
             <div class="flex-align">
                 <h1 style="font-size: 1.3rem; font-weight: bold; letter-spacing: -0.05em; display: flex; align-items: flex-start;">
-                    SYSWARDEN&nbsp;<span class="text-brand">v1.77 Slackware</span>
+                    SYSWARDEN&nbsp;<span class="text-brand">v1.78 Slackware</span>
                     <div class="syswarden-pulse"></div>
                 </h1>
             </div>
@@ -2871,7 +2889,7 @@ fi
 if [[ "$MODE" != "update" ]]; then
     clear
     echo -e "${GREEN}#############################################################"
-    echo -e "#     SysWarden Tool Installer (Slackware v1.77)     #"
+    echo -e "#     SysWarden Tool Installer (Slackware $VERSION)     #"
     echo -e "#############################################################${NC}"
 fi
 
@@ -2904,7 +2922,10 @@ if [[ "$MODE" != "update" ]]; then
     display_wireguard_qr
 else
     # Update logic
-    if [[ -f "$CONF_FILE" ]]; then source "$CONF_FILE"; fi
+    if [[ -f "$CONF_FILE" ]]; then
+        # shellcheck source=/dev/null
+        source "$CONF_FILE"
+    fi
     select_list_type "update"
     select_mirror "update"
     download_list
