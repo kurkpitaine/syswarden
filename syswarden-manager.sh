@@ -2,7 +2,7 @@
 
 # SysWarden Manager - Blocklists and Whitelists Manager
 # Copyright (C) 2026 duggytuxy - Laurent M.
-# Version: v1.80
+# Version: v1.81
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
@@ -27,7 +27,7 @@ WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
 BLOCKLIST_FILE="$SYSWARDEN_DIR/blocklist.txt"
 SSH_WHITELIST_FILE="$SYSWARDEN_DIR/ssh_whitelist.txt"
 SET_NAME="syswarden_blacklist"
-VERSION="v1.80"
+VERSION="v1.81"
 
 # --- ROOT ENFORCEMENT ---
 if [[ $EUID -ne 0 ]]; then
@@ -239,11 +239,17 @@ whitelist_ip() {
     # ==============================================================================
     # --- DEVSECOPS FIX: DYNAMIC NGINX ACL INJECTION ---
     # Automatically authorize the IP in the Dashboard UI without requiring a full
-    # system update. Uses atomic sed injection and safe Nginx config validation.
+    # system update. Uses atomic AWK injection and safe Nginx config validation.
     # ==============================================================================
     local nginx_conf="/etc/nginx/conf.d/syswarden-ui.conf"
+
     # Fallback for Debian/Ubuntu environments
-    [[ -f "/etc/nginx/sites-available/syswarden-ui.conf" ]] && nginx_conf="/etc/nginx/sites-available/syswarden-ui.conf"
+    if [[ -f "/etc/nginx/sites-available/syswarden-ui.conf" ]]; then
+        nginx_conf="/etc/nginx/sites-available/syswarden-ui.conf"
+    # Fallback for Alpine Linux environments (BusyBox/OpenRC)
+    elif [[ -f "/etc/nginx/http.d/syswarden-ui.conf" ]]; then
+        nginx_conf="/etc/nginx/http.d/syswarden-ui.conf"
+    fi
 
     if [[ -f "$nginx_conf" ]]; then
         echo -e "${BLUE}>> Injecting $target_ip into Nginx UI Access Control List (ACL)...${NC}"
@@ -252,8 +258,9 @@ whitelist_ip() {
         if ! grep -q "allow $target_ip;" "$nginx_conf"; then
 
             # 2. Surgical Injection: Insert 'allow <IP>;' strictly before the 'deny all;' directive
-            # DEVSECOPS FIX: Handle variable spacing/tabs safely for OpenRC/Systemd parity
-            sed -i -e "/^[[:space:]]*deny all;/i \        allow $target_ip;" "$nginx_conf"
+            # DEVSECOPS FIX: Ultimate POSIX compatibility (GNU/BusyBox) using AWK.
+            # We use 'cat' to overwrite the file and preserve original Nginx permissions.
+            awk -v ip="$target_ip" '/^[[:space:]]*deny all;/ { print "    allow " ip ";" } { print }' "$nginx_conf" >"${nginx_conf}.tmp" && cat "${nginx_conf}.tmp" >"$nginx_conf" && rm -f "${nginx_conf}.tmp"
 
             # 3. Safety Check: Validate Nginx syntax before reloading to prevent web server crash
             if command -v nginx >/dev/null && nginx -t >/dev/null 2>&1; then

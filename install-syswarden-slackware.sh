@@ -34,7 +34,7 @@ CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
 # shellcheck disable=SC2034
-VERSION="v1.80"
+VERSION="v1.81"
 ACTIVE_PORTS=""
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
@@ -121,13 +121,38 @@ install_dependencies() {
     if ! command -v nginx >/dev/null; then missing_common+=("nginx"); fi
     if ! command -v openssl >/dev/null; then missing_common+=("openssl"); fi
     if ! command -v fail2ban-client >/dev/null; then missing_common+=("fail2ban"); fi
+    if ! command -v wg >/dev/null; then missing_common+=("wireguard-tools"); fi
+    if ! command -v qrencode >/dev/null; then missing_common+=("qrencode"); fi
 
     if [[ ${#missing_common[@]} -gt 0 ]]; then
-        log "ERROR" "CRITICAL MISSING DEPENDENCIES: ${missing_common[*]}"
-        echo -e "${RED}Slackware does not automatically resolve third-party packages.${NC}"
-        echo -e "${YELLOW}Please install the missing packages using sbopkg (SlackBuilds) before continuing.${NC}"
-        echo -e "Example: sbopkg -i jq && sbopkg -i fail2ban && sbopkg -i nginx"
-        exit 1
+        log "WARN" "Missing dependencies detected: ${missing_common[*]}"
+        echo -e "${YELLOW}SysWarden needs to compile the following packages: ${missing_common[*]}${NC}"
+        read -p "Do you want SysWarden to automatically compile them via sbopkg? (This may take 15-30 mins) [y/N]: " auto_build
+
+        if [[ "$auto_build" =~ ^[Yy]$ ]]; then
+            if ! command -v sbopkg >/dev/null; then
+                log "INFO" "sbopkg not found. Downloading and installing sbopkg..."
+                curl -sS -L "https://github.com/sbopkg/sbopkg/releases/download/0.38.2/sbopkg-0.38.2-noarch-1_wsr.tgz" -o /tmp/sbopkg.tgz || true
+                if [[ -s /tmp/sbopkg.tgz ]]; then
+                    installpkg /tmp/sbopkg.tgz >/dev/null 2>&1
+                    rm -f /tmp/sbopkg.tgz
+                    log "INFO" "Syncing SlackBuilds repository tree..."
+                    sbopkg -r >/dev/null 2>&1 || true
+                else
+                    log "ERROR" "Failed to download sbopkg. Please install it manually."
+                    exit 1
+                fi
+            fi
+
+            for pkg in "${missing_common[@]}"; do
+                log "INFO" "Compiling $pkg via sbopkg (Please wait, do not interrupt)..."
+                sbopkg -B -i "$pkg" >/dev/null 2>&1 || log "WARN" "sbopkg encountered a potential issue with $pkg."
+            done
+        else
+            log "ERROR" "CRITICAL MISSING DEPENDENCIES: ${missing_common[*]}"
+            echo -e "${RED}Slackware does not automatically resolve third-party packages.${NC}"
+            exit 1
+        fi
     fi
 
     # Preemptive Nginx Log Creation
@@ -1871,6 +1896,11 @@ EOF
             chmod 640 /var/log/fail2ban.log
         fi
 
+        # --- DEVSECOPS FIX: Ensure daemon is executable on Slackware ---
+        if [[ -f /etc/rc.d/rc.fail2ban ]]; then
+            chmod +x /etc/rc.d/rc.fail2ban
+        fi
+
         if [[ -x /etc/rc.d/rc.fail2ban ]]; then
             /etc/rc.d/rc.fail2ban restart 2>/dev/null || true
         else
@@ -2387,7 +2417,7 @@ generate_dashboard() {
         <div class="container flex-between">
             <div class="flex-align">
                 <h1 style="font-size: 1.3rem; font-weight: bold; letter-spacing: -0.05em; display: flex; align-items: flex-start;">
-                    SYSWARDEN&nbsp;<span class="text-brand">v1.80 Slackware</span>
+                    SYSWARDEN&nbsp;<span class="text-brand">v1.81 Slackware</span>
                     <div class="syswarden-pulse"></div>
                 </h1>
             </div>
@@ -2815,7 +2845,20 @@ $(echo -e "$NGINX_ALLOW_RULES")
     location ~ /\. { deny all; }
 }
 EOF
-    # Note: The admin must ensure 'include /etc/nginx/conf.d/*.conf;' is in their nginx.conf
+
+    # --- DEVSECOPS FIX: Dynamically patch native Slackware nginx.conf ---
+    if [[ -f /etc/nginx/nginx.conf ]]; then
+        if ! grep -q "include /etc/nginx/conf.d/\*.conf;" /etc/nginx/nginx.conf; then
+            log "INFO" "Patching native /etc/nginx/nginx.conf to include syswarden dashboard..."
+            sed -i 's/http {/http {\n    include \/etc\/nginx\/conf.d\/\*.conf;/g' /etc/nginx/nginx.conf || true
+        fi
+    fi
+
+    # --- DEVSECOPS FIX: Ensure daemon is executable on Slackware ---
+    if [[ -f /etc/rc.d/rc.nginx ]]; then
+        chmod +x /etc/rc.d/rc.nginx
+    fi
+
     if [[ -x /etc/rc.d/rc.nginx ]]; then
         /etc/rc.d/rc.nginx restart 2>/dev/null || true
     fi
