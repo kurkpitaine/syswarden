@@ -36,11 +36,11 @@
 
 # SysWarden
 
-SysWarden is an enterprise-grade, open-source firewall orchestrator designed to eliminate 98,2% of noisy, disruptive, and malicious internet traffic. Built around the [Data-Shield IPv4 Blocklists community](https://github.com/duggytuxy/Data-Shield_IPv4_Blocklist), it dynamically integrates GeoIP filtering, [Spamhaus ASN blocking](https://www.spamhaus.org/drop/asndrop.json), and [Fail2ban](https://github.com/fail2ban/fail2ban) intrusion prevention. > Engineered for modern infrastructure, SysWarden provides hermetic Docker protection, automated [AbuseIPDB](https://www.abuseipdb.com/) reporting, and deploys a stealth [WireGuard](https://www.wireguard.com/) management VPN—all operating natively within the Linux kernel to guarantee maximum security with near-zero RAM consumption.
+SysWarden is an enterprise-grade, open-source firewall orchestrator for Linux designed to eliminate 97% of noisy, disruptive, and malicious internet traffic. Built around the [Data-Shield IPv4 Blocklists community](https://github.com/duggytuxy/Data-Shield_IPv4_Blocklist), it dynamically integrates GeoIP filtering, [Spamhaus ASN blocking](https://www.spamhaus.org/drop/asndrop.json), and [Fail2ban](https://github.com/fail2ban/fail2ban) intrusion prevention. > Engineered for modern infrastructure, SysWarden provides hermetic Docker protection, automated [AbuseIPDB](https://www.abuseipdb.com/) reporting, and deploys a stealth [WireGuard](https://www.wireguard.com/) management VPN—all operating natively within the Linux kernel to guarantee maximum security with near-zero RAM consumption.
 
 ## What Does SysWarden Protect?
 
-SysWarden acts as an advanced, preemptive orchestration layer for your infrastructure. By leveraging community-driven threat intelligence and dropping malicious traffic natively at the firewall level (Kernel-Space) **before** it ever reaches your applications, it provides a highly optimized, impenetrable shield for your exposed assets.
+SysWarden acts as an advanced, preemptive orchestration layer for your Linux infrastructure. By leveraging community-driven threat intelligence and dropping malicious traffic natively at the firewall level (Kernel-Space) **before** it ever reaches your applications, it provides a highly optimized, impenetrable shield for your exposed assets.
 
 It is highly recommended for securing:
 
