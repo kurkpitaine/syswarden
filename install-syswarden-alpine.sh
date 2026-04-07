@@ -42,7 +42,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v1.94"
+VERSION="v1.95"
 ACTIVE_PORTS=""
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
@@ -3785,7 +3785,7 @@ setup_wazuh_agent() {
 }
 
 # ==============================================================================
-# SYSWARDEN v1.94 - TELEMETRY BACKEND (SERVERLESS - IP REGISTRY UPDATE)
+# SYSWARDEN v1.95 - TELEMETRY BACKEND (SERVERLESS - IP REGISTRY UPDATE)
 # ==============================================================================
 function setup_telemetry_backend() {
     log "INFO" "Installation of the advanced telemetry engine (Backend)..."
@@ -3962,7 +3962,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v1.94 - ALPINE NGINX SECURE DASHBOARD (BOOTSTRAP 5 / HTTPS / CSP)
+# SYSWARDEN v1.95 - ALPINE NGINX SECURE DASHBOARD (BOOTSTRAP 5 / HTTPS / CSP)
 # ==============================================================================
 function generate_dashboard() {
     log "INFO" "Generating the Nginx-secured Dashboard UI (HTTPS/CSP/Local-Fonts)..."
@@ -4107,7 +4107,7 @@ function generate_dashboard() {
         <div class="container-fluid px-xxl-5 px-4">
             <a class="navbar-brand fw-bold nav-brand-text d-flex align-items-center gap-2" href="#">
                 <svg class="nav-brand-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
-                SYSWARDEN <span class="text-muted small font-mono" style="font-size: 0.75rem; margin-top: 4px;">v1.94</span>
+                SYSWARDEN <span class="text-muted small font-mono" style="font-size: 0.75rem; margin-top: 4px;">v1.95</span>
             </a>
             <div class="d-flex align-items-center gap-3 ms-auto">
                 <span class="d-none d-md-inline text-muted small font-mono">Sys: <strong id="sys-hostname" class="text-body">--</strong></span>
@@ -4224,7 +4224,7 @@ function generate_dashboard() {
         <div class="row g-4">
             <div class="col-xxl-8 col-lg-7">
                 <div class="card h-100">
-                    <div class="card-header bg-transparent border-0 pt-4 pb-3 px-4 d-flex align-items-center gap-2 text-danger">
+                    <div class="card-header bg-transparent border-0 pt-4 pb-3 px-4 d-flex align-items-center gap-2 text-muted">
                         <span>🔴</span> L7 Banned IP Registry (Live Jail Allocations)
                     </div>
                     <div class="card-body p-0">
@@ -5102,7 +5102,7 @@ if [[ "$MODE" != "update" ]]; then
         CYAN='\033[0;36m'
         clear
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
-        echo -e "${GREEN}${BOLD}                   SYSWARDEN v1.94 - PRE-FLIGHT CHECKLIST                     ${NC}"
+        echo -e "${GREEN}${BOLD}                   SYSWARDEN v1.95 - PRE-FLIGHT CHECKLIST                     ${NC}"
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
         echo -e "Before proceeding with the deployment, please ensure you have the following"
         echo -e "information ready. If you lack any required data, press [Ctrl+C] to abort,"
