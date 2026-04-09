@@ -106,11 +106,7 @@ Uninstall Syswarden properly while keeping your original settings.
 
 ## Documentation
 
-To learn everything about the SysWarden ecosystem, explore detailed configurations, and read advanced usage guides, please visit our dedicated documentation page:
-
-👉**[Read the Official Documentation](/DOCS.md)**
-
-
+To learn everything about the SysWarden ecosystem, explore detailed configurations, and read advanced usage guides, please visit our dedicated [documentation page](/DOCS.md)
 
 ## Target: €3,000/year to fuel continuous DevSecOps improvements and integrations
 
