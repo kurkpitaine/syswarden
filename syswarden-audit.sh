@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# SysWarden v2.11 - DevSecOps Audit & Compliance Tool
+# SysWarden v2.12 - DevSecOps Audit & Compliance Tool
 # Copyright (C) 2026 duggytuxy - Laurent M.
 #
 # This program is free software: you can redistribute it and/or modify
@@ -374,14 +374,14 @@ if [[ "$RUN_ALL" -eq 1 || "$USER_PHASES" == *" 3 "* ]]; then
         pass "Firewall Engine ($FW_ENGINE) is active and strictly enforcing SysWarden rules."
 
         if [[ "$FW_ENGINE" == "Nftables" ]]; then
-            TOTAL=$((TOTAL + 1))
+            # FIX: Double incr. removed
             if nft list table netdev syswarden_hw_drop >/dev/null 2>&1; then
                 pass "Nftables Layer 2 Hardware Acceleration (netdev syswarden_hw_drop) is ACTIVE."
             else
                 fail "Nftables Layer 2 Hardware Acceleration is MISSING or failed to load."
             fi
         elif [[ "$FW_ENGINE" == "Iptables" ]]; then
-            TOTAL=$((TOTAL + 1))
+            # FIX: Double incr. removed
             if iptables -t raw -n -L PREROUTING 2>/dev/null | grep -q "SysWarden-BLOCK"; then
                 pass "IPtables Layer 3 Pre-Routing (table raw) IPS acceleration is ACTIVE."
             else
@@ -836,7 +836,7 @@ if [[ "$RUN_ALL" -eq 1 || "$USER_PHASES" == *" 8 "* ]]; then
 
     # 1. HA Cluster Sync
     if [[ -f "/usr/local/bin/syswarden-sync.sh" ]]; then
-        TOTAL=$((TOTAL + 1))
+        # FIX: Double incr. removed
         if crontab -l 2>/dev/null | grep -q "syswarden-sync"; then
             pass "HA Cluster Sync is ACTIVE and securely scheduled in Cron."
         else
@@ -848,7 +848,7 @@ if [[ "$RUN_ALL" -eq 1 || "$USER_PHASES" == *" 8 "* ]]; then
 
     # 2. SIEM Log Forwarding (Rsyslog)
     if [[ -f "/etc/rsyslog.d/99-syswarden-siem.conf" ]]; then
-        TOTAL=$((TOTAL + 1))
+        # FIX: Double incr. removed
         if grep -q "@@\|@" "/etc/rsyslog.d/99-syswarden-siem.conf"; then
             pass "SIEM Log Forwarding (ISO 27001/NIS2) is ACTIVE and configured."
         else
