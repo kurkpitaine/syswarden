@@ -34,7 +34,7 @@ CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
 # shellcheck disable=SC2034
-VERSION="v2.23"
+VERSION="v2.24"
 ACTIVE_PORTS=""
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
@@ -2861,7 +2861,8 @@ if command -v fail2ban-client >/dev/null && timeout 2 fail2ban-client ping >/dev
                             L7_PAYLOAD="Repeat Offender (Recidive Module)"
                         elif [[ "$JAIL" =~ (portscan) ]]; then
                             # KERNEL / FIREWALL Jails (Detects port probing)
-                            RAW_LOG=$(timeout 1 grep -h -F "$IP" /var/log/kern-firewall.log /var/log/kern.log /var/log/messages /var/log/syslog 2>/dev/null | tail -n 1 || true)
+                            # DEVSECOPS FIX: Prevent syswarden_reporter log pollution
+                            RAW_LOG=$(timeout 1 grep -h -F "$IP" /var/log/kern-firewall.log /var/log/kern.log /var/log/messages /var/log/syslog 2>/dev/null | grep -v "syswarden_reporter" | tail -n 1 || true)
                             
                             # DEVSECOPS FIX: Support both kernel native (DPT=XX) and SysWarden CLI format (PORT: XX)
                             DPT=$(echo "$RAW_LOG" | grep -oE '(DPT=[0-9]+|PORT:[ \t]*[0-9]+)' || true)
@@ -2884,7 +2885,9 @@ if command -v fail2ban-client >/dev/null && timeout 2 fail2ban-client ping >/dev
                                 L7_PAYLOAD=$(echo "$RAW_LOG" | sed -E 's/^.*\[error\][0-9 #:]*//')
                             fi
                         else
-                            RAW_LOG=$(timeout 1 grep -h -F "$IP" /var/log/auth-syswarden.log /var/log/secure /var/log/auth.log /var/log/maillog /var/log/mail.log /var/log/messages /var/log/syslog /var/log/fail2ban.log /var/log/daemon.log /var/log/audit/audit.log 2>/dev/null | tail -n 1 || true)
+                            # Auth/System/Mail Jails
+                            # DEVSECOPS FIX: Prevent both syswarden_reporter and fail2ban-server log pollution
+                            RAW_LOG=$(timeout 1 grep -h -F "$IP" /var/log/auth-syswarden.log /var/log/secure /var/log/auth.log /var/log/maillog /var/log/mail.log /var/log/messages /var/log/syslog /var/log/fail2ban.log /var/log/daemon.log /var/log/audit/audit.log 2>/dev/null | grep -vE '(syswarden_reporter|fail2ban-server)' | tail -n 1 || true)
                             L7_PAYLOAD=$(echo "$RAW_LOG" | sed -E 's/^.*[a-zA-Z]+\[[0-9]+\]:[ \t]*//')
                         fi
                         
@@ -2976,7 +2979,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v2.23 - NGINX SECURE DASHBOARD (ENTERPRISE SAAS UI / SPA / CSP)
+# SYSWARDEN v2.24 - NGINX SECURE DASHBOARD (ENTERPRISE SAAS UI / SPA / CSP)
 # ==============================================================================
 function generate_dashboard() {
     log "INFO" "Generating the Enterprise SaaS Nginx Dashboard (SPA/Sidebar/CSP)..."
@@ -3116,7 +3119,7 @@ function generate_dashboard() {
         <div class="d-flex align-items-center gap-2 px-2 mb-5">
             <svg style="color: var(--sw-brand-icon);" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
             <span class="fs-5 fw-bold" style="color: var(--sw-brand-text); letter-spacing: -0.5px;">SYSWARDEN</span>
-            <span class="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 rounded-pill font-mono small ms-auto">v2.23</span>
+            <span class="badge bg-primary bg-opacity-10 text-primary border border-primary border-opacity-25 rounded-pill font-mono small ms-auto">v2.24</span>
         </div>
 
         <nav class="flex-grow-1">
@@ -3942,7 +3945,7 @@ if [[ "$MODE" != "update" ]] && [[ "$MODE" != "uninstall" ]]; then
     echo -e "${RED}███████║   ██║   ███████║╚███╔███╔╝██║  ██║██║  ██║██████╔╝███████╗██║ ╚████║${NC}"
     echo -e "${RED}╚══════╝   ╚═╝   ╚══════╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═══╝${NC}"
     echo -e "${BLUE}===================================================================================${NC}"
-    echo -e "${GREEN}               Advanced Firewall & Blocklist Orchestrator | v2.23                  ${NC}"
+    echo -e "${GREEN}               Advanced Firewall & Blocklist Orchestrator | v2.24                  ${NC}"
     echo -e "${BLUE}===================================================================================${NC}\n"
 fi
 
@@ -3961,7 +3964,7 @@ if [[ "$MODE" != "update" ]]; then
         CYAN='\033[0;36m'
         clear
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
-        echo -e "${GREEN}${BOLD}                   SYSWARDEN v2.23 - PRE-FLIGHT CHECKLIST                     ${NC}"
+        echo -e "${GREEN}${BOLD}                   SYSWARDEN v2.24 - PRE-FLIGHT CHECKLIST                     ${NC}"
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
         echo -e "Before proceeding with the deployment, please ensure you have the following"
         echo -e "information ready. If you lack any required data, press [Ctrl+C] to abort,"
