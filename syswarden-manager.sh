@@ -2,7 +2,7 @@
 
 # SysWarden Manager - Blocklists and Whitelists Manager
 # Copyright (C) 2026 duggytuxy - Laurent M.
-# Version: v2.42
+# Version: v2.43
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
@@ -27,7 +27,7 @@ WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
 BLOCKLIST_FILE="$SYSWARDEN_DIR/blocklist.txt"
 SSH_WHITELIST_FILE="$SYSWARDEN_DIR/ssh_whitelist.txt"
 SET_NAME="syswarden_blacklist"
-VERSION="v2.42"
+VERSION="v2.43"
 
 # --- ROOT ENFORCEMENT ---
 if [[ $EUID -ne 0 ]]; then
@@ -486,6 +486,77 @@ block_ip() {
     echo -e "${CYAN}>> IP $target_ip is now Blocked.${NC}\n"
 }
 
+# --- AUTO-WHITELIST INFRASTRUCTURE ---
+auto_whitelist_infra() {
+    echo -e "\n${BLUE}=== SysWarden Auto-Whitelist Infrastructure ===${NC}"
+
+    if [[ -f "$CONF_FILE" ]]; then
+        # shellcheck source=/dev/null
+        source "$CONF_FILE" 2>/dev/null || true
+    fi
+
+    if [[ "${WHITELIST_INFRA:-y}" == "n" ]]; then
+        echo -e "${YELLOW}[i] Auto-whitelisting of critical infrastructure is DISABLED via configuration.${NC}"
+        return
+    fi
+
+    echo -e "${CYAN}>> Scanning critical infrastructure IPs (DNS, Gateway, DHCP, Cloud Metadata)...${NC}"
+
+    local infra_ips=""
+
+    # 1. Extract DNS Resolvers
+    if [[ -f /etc/resolv.conf ]]; then
+        local dns_ips
+        dns_ips=$(grep '^nameserver' /etc/resolv.conf | awk '{print $2}' | grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || true)
+        infra_ips="$infra_ips $dns_ips"
+    fi
+
+    # 2. Extract Default Gateway(s)
+    if command -v ip >/dev/null; then
+        local gw_ips
+        gw_ips=$(ip -4 route show default 2>/dev/null | grep -Eo 'via [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | awk '{print $2}' || true)
+        infra_ips="$infra_ips $gw_ips"
+    fi
+
+    # 3. Add Cloud Metadata IP (Universal AWS, GCP, Azure, OVH, Scaleway)
+    infra_ips="$infra_ips 169.254.169.254"
+
+    # 4. Extract DHCP Server IP (Universal)
+    if [[ -f /var/lib/dhcp/dhclient.leases ]]; then
+        local dhcp_ips
+        dhcp_ips=$(grep -E 'dhcp-server-identifier' /var/lib/dhcp/dhclient.leases 2>/dev/null | awk '{print $3}' | tr -d ';' | grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' || true)
+        infra_ips="$infra_ips $dhcp_ips"
+    fi
+
+    # 5. Extract Host's own public/local IPs
+    if command -v ip >/dev/null; then
+        local host_ips
+        host_ips=$(ip -4 addr show | grep -oEo 'inet [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | awk '{print $2}' | grep -v '^127\.' || true)
+        infra_ips="$infra_ips $host_ips"
+    fi
+
+    # --- HOTFIX: TEMPORARY IFS RESTORE ---
+    local OLD_IFS="$IFS"
+    IFS=$' \n\t'
+    local added_count=0
+
+    for ip in $infra_ips; do
+        if [[ -n "$ip" && "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            if ! grep -q "^${ip}$" "$WHITELIST_FILE" 2>/dev/null; then
+                echo -e "\n${YELLOW}>> Auto-detect found new critical IP: $ip${NC}"
+                # Re-use the manager's native hot-whitelist function (Zero-Downtime Injection)
+                whitelist_ip "$ip"
+                added_count=$((added_count + 1))
+            fi
+        fi
+    done
+    IFS="$OLD_IFS"
+
+    if [[ $added_count -eq 0 ]]; then
+        echo -e "\n${GREEN}[✔] All critical infrastructure IPs are already whitelisted and secured.${NC}"
+    fi
+}
+
 # --- LIST ALL CUSTOM IPs ---
 list_ips() {
     echo -e "\n${CYAN}=== SysWarden Custom IP Registry ===${NC}"
@@ -534,6 +605,7 @@ show_help() {
     echo -e "  ${CYAN}block${NC} <IP>             : Hot-adds IP to kernel drop set and blocklist file"
     echo -e "  ${CYAN}unblock${NC} <IP>           : Purges IP from blocklist, kernel, and Fail2ban"
     echo -e "  ${CYAN}whitelist${NC} <IP>         : Grants absolute VIP access & bypasses firewall"
+    echo -e "  ${CYAN}whitelist-infra${NC}        : Auto-detects and whitelists DNS, Gateway, DHCP, etc."
     echo -e "  ${CYAN}allow-ssh${NC} <IP> [PORT]  : Allows direct SSH access for this IP"
     echo -e "  ${CYAN}revoke-ssh${NC} <IP>        : Revokes direct SSH access for this IP"
     echo -e "  ${CYAN}list${NC}                   : Displays all manually whitelisted and blocked IPs"
@@ -581,6 +653,9 @@ case "$COMMAND" in
             exit 1
         fi
         whitelist_ip "$2"
+        ;;
+    whitelist-infra)
+        auto_whitelist_infra
         ;;
     allow-ssh)
         if [[ -z "${2:-}" ]]; then
