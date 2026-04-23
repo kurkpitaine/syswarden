@@ -45,7 +45,7 @@ SET_NAME="syswarden_blacklist"
 # Ensure absolute privacy for the temporary directory to prevent unauthorized access
 TMP_DIR=$(mktemp -d -t syswarden-install-XXXXXX)
 chmod 0700 "$TMP_DIR"
-VERSION="v2.49"
+VERSION="v2.50"
 ACTIVE_PORTS=""
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
@@ -3363,7 +3363,7 @@ def monitor_logs():
         proc_f2b.stdout.fileno(): 'f2b'
     }
 
-    # v2.49 Logic: STRICT filter on [SysWarden-BLOCK] only.
+    # v2.50 Logic: STRICT filter on [SysWarden-BLOCK] only.
     regex_fw = re.compile(r"\[SysWarden-BLOCK\].*?SRC=([\d\.]+).*?DPT=(\d+)")
     regex_f2b = re.compile(r"\[([a-zA-Z0-9_-]+)\]\s+Ban\s+([\d\.]+)")
 
@@ -4259,7 +4259,7 @@ setup_wazuh_agent() {
 }
 
 # ==============================================================================
-# SYSWARDEN v2.49 - TELEMETRY BACKEND
+# SYSWARDEN v2.50 - TELEMETRY BACKEND
 # ==============================================================================
 function setup_telemetry_backend() {
     log "INFO" "Installation of the advanced telemetry engine (Backend)..."
@@ -4678,7 +4678,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v2.49 - NGINX SECURE DASHBOARD (ENTERPRISE SAAS UI / SPA / CSP)
+# SYSWARDEN v2.50 - NGINX SECURE DASHBOARD (ENTERPRISE SAAS UI / SPA / CSP)
 # ==============================================================================
 function generate_dashboard() {
     log "INFO" "Generating the Enterprise SaaS Nginx Dashboard (SPA/Sidebar/CSP)..."
@@ -4827,7 +4827,7 @@ function generate_dashboard() {
             <svg style="color: var(--sw-brand-icon);" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
             <div class="d-flex align-items-baseline gap-2 hide-collapsed">
                 <span class="fs-5 fw-bold" style="color: var(--sw-brand-text); letter-spacing: -0.5px;">SYSWARDEN</span>
-                <span class="stat-label" style="margin-bottom: 0;">v2.49</span>
+                <span class="stat-label" style="margin-bottom: 0;">v2.50</span>
             </div>
         </div>
 
@@ -5165,7 +5165,9 @@ EOF
     cat <<'EOF' >"$UI_DIR/app.js"
 let threatChart = null;
 let riskChart = null;
-const MAX_DATA_POINTS = 40;
+// --- 24H TIMELINE CONFIG ---
+// 17280 points = 24 hours
+const MAX_DATA_POINTS = 17280;
 
 document.addEventListener('DOMContentLoaded', () => {
     
@@ -5265,20 +5267,40 @@ document.addEventListener('DOMContentLoaded', () => {
         applyThemeState(window.matchMedia('(prefers-color-scheme: dark)').matches);
     }
 
-    // --- CHART.JS INITIALIZATION ---
+    // --- CHART.JS INITIALIZATION (PURE STACKED AREA CHART MULTI-VECTORS) ---
     const chartData = {
         labels: [],
-        datasets: [{
-            label: 'L7 Blocked Threats', data: [],
-            borderColor: '#3b82f6', backgroundColor: 'rgba(59, 130, 246, 0.1)',
-            borderWidth: 2, fill: true, tension: 0.4,
-            pointBackgroundColor: '#3b82f6', pointBorderColor: '#fff',
-            pointRadius: 0, pointHoverRadius: 6, pointHitRadius: 10
-        }]
+        datasets: [
+            {
+                label: 'Exploits', data: [],
+                backgroundColor: '#ef4444',
+                borderWidth: 0, fill: true, cubicInterpolationMode: 'monotone', pointRadius: 0, pointHoverRadius: 6
+            },
+            {
+                label: 'Brute-Force', data: [],
+                backgroundColor: '#eab308',
+                borderWidth: 0, fill: true, cubicInterpolationMode: 'monotone', pointRadius: 0, pointHoverRadius: 6
+            },
+            {
+                label: 'Recon', data: [],
+                backgroundColor: '#3b82f6',
+                borderWidth: 0, fill: true, cubicInterpolationMode: 'monotone', pointRadius: 0, pointHoverRadius: 6
+            },
+            {
+                label: 'DDoS', data: [],
+                backgroundColor: '#6b7280', // Dynamic in Theme Updater
+                borderWidth: 0, fill: true, cubicInterpolationMode: 'monotone', pointRadius: 0, pointHoverRadius: 6
+            },
+            {
+                label: 'Abuse/Spam', data: [],
+                backgroundColor: '#f97316',
+                borderWidth: 0, fill: true, cubicInterpolationMode: 'monotone', pointRadius: 0, pointHoverRadius: 6
+            }
+        ]
     };
 
     try {
-        // 1. Timeline Chart
+        // 1. Timeline Chart (Stacked Area 24h)
         const ctxThreat = document.getElementById('threatChart').getContext('2d');
         threatChart = new Chart(ctxThreat, {
             type: 'line', data: chartData,
@@ -5287,11 +5309,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 interaction: { mode: 'index', intersect: false },
                 plugins: { 
                     legend: { display: false },
-                    tooltip: { animation: false, titleFont: { family: 'monospace', size: 13 }, bodyFont: { family: 'monospace', size: 12 }, padding: 12, cornerRadius: 8, displayColors: false }
+                    tooltip: { animation: false, titleFont: { family: 'monospace', size: 13 }, bodyFont: { family: 'monospace', size: 12 }, padding: 12, cornerRadius: 8, displayColors: true }
                 },
                 scales: {
-                    x: { display: false },
-                    y: { beginAtZero: true, ticks: { font: { family: 'monospace', size: 11 } }, border: { display: false } }
+                    x: { 
+                        display: true, 
+                        ticks: { maxTicksLimit: 12, maxRotation: 0, font: { family: 'monospace', size: 10 } },
+                        grid: { display: false }
+                    },
+                    y: { 
+                        stacked: true, 
+                        beginAtZero: true, 
+                        ticks: { font: { family: 'monospace', size: 11 } }, 
+                        border: { display: false } 
+                    }
                 },
                 animation: { duration: 0 }
             }
@@ -5333,13 +5364,18 @@ document.addEventListener('DOMContentLoaded', () => {
         const isDark = theme === 'dark';
         const gridColor = isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.05)';
         const textColor = isDark ? '#a1a1aa' : '#6b7280';
+        const ddosSolidBg = isDark ? '#fafafa' : '#27272a';
         
+        threatChart.options.scales.x.ticks.color = textColor;
         threatChart.options.scales.y.grid = { color: gridColor };
         threatChart.options.scales.y.ticks.color = textColor;
         threatChart.options.plugins.tooltip.backgroundColor = isDark ? 'rgba(24, 24, 27, 0.95)' : 'rgba(255, 255, 255, 0.95)';
         threatChart.options.plugins.tooltip.titleColor = isDark ? '#fff' : '#000';
         threatChart.options.plugins.tooltip.bodyColor = isDark ? '#a1a1aa' : '#4b5563';
         threatChart.options.plugins.tooltip.borderColor = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+        
+        // Update dynamic solid color for DDoS Area (No border needed)
+        threatChart.data.datasets[3].backgroundColor = ddosSolidBg;
         threatChart.update();
         
         if(riskChart) {
@@ -5580,16 +5616,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 bannedEl.innerHTML = `<tr><td colspan="5" class="text-center text-muted small py-5">Registry is empty. Architecture is secure.</td></tr>`; 
             }
 
-            // Chart Updater (Live Timeline)
+            // Chart Updater (Live Timeline 24H - Stacked Area Vectors)
             const now = new Date();
-            const timeString = now.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute:'2-digit', second:'2-digit' });
+            const timeString = now.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute:'2-digit' });
 
-            if (threatChart) {
+            if (threatChart && data.layer7.risk_radar) {
                 chartData.labels.push(timeString);
-                chartData.datasets[0].data.push(data.layer7.total_banned);
+                
+                // Risk Radar Array Mapping:
+                // 0: Exploits, 1: Brute-Force, 2: Recon, 3: DDoS, 4: Abuse/Spam
+                chartData.datasets[0].data.push(data.layer7.risk_radar[0]);
+                chartData.datasets[1].data.push(data.layer7.risk_radar[1]);
+                chartData.datasets[2].data.push(data.layer7.risk_radar[2]);
+                chartData.datasets[3].data.push(data.layer7.risk_radar[3]);
+                chartData.datasets[4].data.push(data.layer7.risk_radar[4]);
+
                 if (chartData.labels.length > MAX_DATA_POINTS) {
                     chartData.labels.shift();
-                    chartData.datasets[0].data.shift();
+                    chartData.datasets.forEach(ds => ds.data.shift());
                 }
                 threatChart.update();
             }
@@ -6304,7 +6348,7 @@ if [[ "$MODE" != "update" ]] && [[ "$MODE" != "uninstall" ]]; then
     echo -e "${RED}███████║   ██║   ███████║╚███╔███╔╝██║  ██║██║  ██║██████╔╝███████╗██║ ╚████║${NC}"
     echo -e "${RED}╚══════╝   ╚═╝   ╚══════╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═══╝${NC}"
     echo -e "${BLUE}===================================================================================${NC}"
-    echo -e "${GREEN}               Advanced Firewall & Blocklist Orchestrator | v2.49                  ${NC}"
+    echo -e "${GREEN}               Advanced Firewall & Blocklist Orchestrator | v2.50                  ${NC}"
     echo -e "${BLUE}===================================================================================${NC}\n"
 fi
 
@@ -6326,7 +6370,7 @@ if [[ "$MODE" != "update" ]]; then
         CYAN='\033[0;36m'
         clear
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
-        echo -e "${GREEN}${BOLD}                   SYSWARDEN v2.49 - PRE-FLIGHT CHECKLIST                     ${NC}"
+        echo -e "${GREEN}${BOLD}                   SYSWARDEN v2.50 - PRE-FLIGHT CHECKLIST                     ${NC}"
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
         echo -e "Before proceeding with the deployment, please ensure you have the following"
         echo -e "information ready. If you lack any required data, press [Ctrl+C] to abort,"
