@@ -33,7 +33,7 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 TMP_DIR=$(mktemp -d)
-VERSION="v2.55"
+VERSION="v2.56"
 ACTIVE_PORTS=""
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
@@ -1662,7 +1662,7 @@ EOF
             # 3. Allow WireGuard UDP port for tunnel establishment
             firewall-cmd --permanent --add-port="${WG_PORT:-51820}/udp" >/dev/null 2>&1 || true
 
-            # --- STRICT ZERO TRUST HIERARCHY (v2.55) - DEBIAN PARITY) ---
+            # --- STRICT ZERO TRUST HIERARCHY (v2.56) - DEBIAN PARITY) ---
 
             # Priority -1000: Highest priority. Allow SSH & Dashboard strictly from VPN.
             firewall-cmd --permanent --add-rich-rule="rule priority='-1000' family='ipv4' source address='${WG_SUBNET}' port port='${SSH_PORT:-22}' protocol='tcp' accept" >/dev/null 2>&1 || true
@@ -4329,23 +4329,22 @@ def monitor_logs():
     load_cache() # Load JSON cache on startup
     
     # --- BUG FIX: MULTIPLEXING FLAT FILES VS JOURNALCTL ---
-    # Fail2ban logs to /var/log/fail2ban.log, which journalctl misses.
-    # We dynamically construct a tail command for all existing physical logs.
     logs_to_tail = []
     for log_path in ['/var/log/kern-firewall.log', '/var/log/kern.log', '/var/log/syslog', '/var/log/messages', '/var/log/fail2ban.log']:
         if os.path.exists(log_path):
             logs_to_tail.append(log_path)
             
+    # DEVSECOPS FIX: We route stderr to STDOUT so permission errors are caught by journalctl instead of being swallowed.
     if logs_to_tail:
-        f = subprocess.Popen(['tail', '-F', '-n', '0', '-q'] + logs_to_tail, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        f = subprocess.Popen(['tail', '-F', '-n', '0', '-q'] + logs_to_tail, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     else:
         # Fallback if no physical logs exist
-        f = subprocess.Popen(['journalctl', '-f', '-n', '0', '-o', 'cat'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        f = subprocess.Popen(['journalctl', '-f', '-n', '0', '-o', 'cat'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
     p = select.poll()
     p.register(f.stdout)
 
-    # v2.55 Logic: Universal Firewall Netfilter Regex (Matches Standard, Docker, GeoIP and ASN)
+    # v2.56 Logic: Universal Firewall Netfilter Regex (Matches Standard, Docker, GeoIP and ASN)
     regex_fw = re.compile(r"\[SysWarden-(BLOCK|DOCKER|GEO|ASN)\].*?SRC=([\d\.]+)")
     regex_dpt = re.compile(r"DPT=(\d+)")
     regex_f2b = re.compile(r"\[([a-zA-Z0-9_-]+)\]\s+Ban\s+([\d\.]+)")
@@ -4353,7 +4352,12 @@ def monitor_logs():
     while True:
         if p.poll(100):
             line = f.stdout.readline().decode('utf-8', errors='ignore')
-            if not line: continue
+            
+            # DEVSECOPS FIX: CPU Time-Bomb Prevention. 
+            # If tail dies or hits EOF, it returns an empty string. We must break out.
+            if not line:
+                print("[FATAL] Log process died or reached EOF. Exiting to allow Systemd to restart the service.", flush=True)
+                break
 
             # --- FIREWALL LOGIC ---
             if ENABLE_FW:
@@ -4458,10 +4462,9 @@ EOF
 
         # --- SECURITY FIX: SECURE ABUSEIPDB API KEY ---
         # The python script contains the API key in plain text.
-        # We restrict ownership to root and the 'adm' group (used by the DynamicUser).
-        # Permissions 750 (rwxr-x---) ensure standard users cannot read the API key.
-        chown root:adm /usr/local/bin/syswarden_reporter.py
-        chmod 750 /usr/local/bin/syswarden_reporter.py
+        # We enforce absolute root ownership so no non-privileged user can view the code.
+        chown root:root /usr/local/bin/syswarden_reporter.py
+        chmod 700 /usr/local/bin/syswarden_reporter.py
         # ----------------------------------------------
 
         log "INFO" "Creating systemd service for Reporter..."
@@ -4476,13 +4479,13 @@ ExecStart=/usr/local/bin/syswarden_reporter.py
 Restart=always
 
 # --- SECURITY & LEAST PRIVILEGE ---
-DynamicUser=yes
-SupplementaryGroups=systemd-journal adm
+# DEVSECOPS FIX: Removed DynamicUser=yes. The telemetry script MUST have the right 
+# to read /var/log/kern-firewall.log which is strictly locked to root (600) to prevent log spoofing.
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 NoNewPrivileges=yes
-# Ensure script can write its cache file securely via DynamicUser
+# Ensure script can write its cache file securely 
 StateDirectory=syswarden
 # ----------------------------------
 
@@ -5193,7 +5196,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v2.55 - TELEMETRY BACKEND
+# SYSWARDEN v2.56 - TELEMETRY BACKEND
 # ==============================================================================
 function setup_telemetry_backend() {
     log "INFO" "Installation of the advanced telemetry engine (Backend)..."
@@ -5539,7 +5542,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v2.55 - NGINX SECURE DASHBOARD (ENTERPRISE SAAS UI / SPA / CSP)
+# SYSWARDEN v2.56 - NGINX SECURE DASHBOARD (ENTERPRISE SAAS UI / SPA / CSP)
 # ==============================================================================
 function generate_dashboard() {
     log "INFO" "Generating the Enterprise SaaS Nginx Dashboard (SPA/CSP)..."
@@ -5633,7 +5636,7 @@ function generate_dashboard() {
     <nav class="top-navbar">
         <div class="d-flex align-items-center gap-3">
             <svg style="color: var(--sw-brand-icon);" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
-            <h5 class="mb-0 fw-bold d-none d-md-block text-uppercase" style="letter-spacing: 0.5px; font-size: 1.1rem; color: var(--sw-text);">SYSWARDEN v2.55</h5>
+            <h5 class="mb-0 fw-bold d-none d-md-block text-uppercase" style="letter-spacing: 0.5px; font-size: 1.1rem; color: var(--sw-text);">SYSWARDEN v2.56</h5>
         </div>
         
         <div class="d-flex align-items-center gap-3 gap-md-4">
@@ -6876,7 +6879,7 @@ if [[ "$MODE" != "update" ]] && [[ "$MODE" != "uninstall" ]]; then
     echo -e "${RED}███████║   ██║   ███████║╚███╔███╔╝██║  ██║██║  ██║██████╔╝███████╗██║ ╚████║${NC}"
     echo -e "${RED}╚══════╝   ╚═╝   ╚══════╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═══╝${NC}"
     echo -e "${BLUE}===================================================================================${NC}"
-    echo -e "${GREEN}               Advanced Firewall & Blocklist Orchestrator | v2.55                  ${NC}"
+    echo -e "${GREEN}               Advanced Firewall & Blocklist Orchestrator | v2.56                  ${NC}"
     echo -e "${BLUE}===================================================================================${NC}\n"
 fi
 
@@ -6915,7 +6918,7 @@ if [[ "$MODE" != "update" ]]; then
         CYAN='\033[0;36m'
         clear
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
-        echo -e "${GREEN}${BOLD}                   SYSWARDEN v2.55 - PRE-FLIGHT CHECKLIST                     ${NC}"
+        echo -e "${GREEN}${BOLD}                   SYSWARDEN v2.56 - PRE-FLIGHT CHECKLIST                     ${NC}"
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
         echo -e "Before proceeding with the deployment, please ensure you have the following"
         echo -e "information ready. If you lack any required data, press [Ctrl+C] to abort,"
