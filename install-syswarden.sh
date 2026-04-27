@@ -39,7 +39,7 @@ TMP_DIR=$(mktemp -d -t syswarden-install-XXXXXX)
 chmod 0700 "$TMP_DIR"
 # ------------------------------------
 
-VERSION="v2.60"
+VERSION="v2.61"
 ACTIVE_PORTS=""
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
@@ -502,6 +502,23 @@ define_wireguard() {
     if [[ "${1:-}" == "auto" ]]; then
         input_wg=${SYSWARDEN_ENABLE_WG:-n}
         log "INFO" "Auto Mode: WireGuard choice loaded via env var [${input_wg}]"
+
+        if [[ "$input_wg" =~ ^[Yy]$ ]]; then
+            WG_PORT=${SYSWARDEN_WG_PORT:-51820}
+            WG_SUBNET=${SYSWARDEN_WG_SUBNET:-"10.66.66.0/24"}
+
+            # --- SECURITY FIX: Strict Input Validation for Auto Mode ---
+            if ! [[ "$WG_PORT" =~ ^[0-9]+$ ]] || [ "$WG_PORT" -lt 1 ] || [ "$WG_PORT" -gt 65535 ]; then
+                log "WARN" "Auto Mode: Invalid WG_PORT format. Defaulting to 51820."
+                WG_PORT=51820
+            fi
+
+            if ! [[ "$WG_SUBNET" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]]; then
+                log "WARN" "Auto Mode: Invalid WG_SUBNET CIDR format. Defaulting to 10.66.66.0/24."
+                WG_SUBNET="10.66.66.0/24"
+            fi
+            # -----------------------------------------------------------
+        fi
     else
         echo -e "${YELLOW}Deploy an ultra-secure, invisible WireGuard VPN for administration?${NC}"
         read -p "Enable WireGuard Management VPN? (y/N): " input_wg
@@ -895,6 +912,15 @@ select_list_type() {
             LIST_TYPE="Custom"
             if [[ "${1:-}" == "auto" ]]; then
                 CUSTOM_URL=${SYSWARDEN_CUSTOM_URL:-""}
+
+                # --- SECURITY FIX: Strict URL Validation for Auto Mode ---
+                CUSTOM_URL=$(echo "$CUSTOM_URL" | tr -d " '\"\;\$\|\&\<\>\`")
+                if [[ -n "$CUSTOM_URL" && ! "$CUSTOM_URL" =~ ^https?:// ]]; then
+                    log "ERROR" "Auto Mode: Invalid CUSTOM_URL. Must start with http:// or https://. Defaulting to Standard List."
+                    LIST_TYPE="Standard"
+                    CUSTOM_URL=""
+                fi
+                # ---------------------------------------------------------
                 log "INFO" "Auto Mode: Custom URL loaded via env var"
             else
                 # --- SECURITY FIX: STRICT URL VALIDATION ---
@@ -1045,6 +1071,14 @@ define_ha_cluster() {
     if [[ "${1:-}" == "auto" ]]; then
         HA_ENABLED=${SYSWARDEN_HA_ENABLED:-n}
         HA_PEER_IP=${SYSWARDEN_HA_PEER_IP:-""}
+
+        # --- SECURITY FIX: Strict IPV4 Validation for Auto Mode ---
+        if [[ "$HA_ENABLED" =~ ^[Yy]$ ]] && ! [[ "$HA_PEER_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+            log "ERROR" "Auto Mode: Invalid HA_PEER_IP IPv4 format. Disabling HA Cluster."
+            HA_ENABLED="n"
+            HA_PEER_IP=""
+        fi
+        # ----------------------------------------------------------
         log "INFO" "Auto Mode: HA choice loaded via env var."
     else
         echo "SysWarden can automatically replicate its threat intelligence state to a standby node."
@@ -1699,7 +1733,7 @@ EOF
             # 3. Allow WireGuard UDP port for tunnel establishment
             firewall-cmd --permanent --add-port="${WG_PORT:-51820}/udp" >/dev/null 2>&1 || true
 
-            # --- STRICT ZERO TRUST HIERARCHY (v2.60) - DEBIAN PARITY) ---
+            # --- STRICT ZERO TRUST HIERARCHY (v2.61) - DEBIAN PARITY) ---
 
             # Priority -1000: Highest priority. Allow SSH & Dashboard strictly from VPN.
             firewall-cmd --permanent --add-rich-rule="rule priority='-1000' family='ipv4' source address='${WG_SUBNET}' port port='${SSH_PORT:-22}' protocol='tcp' accept" >/dev/null 2>&1 || true
@@ -4386,7 +4420,7 @@ def monitor_logs():
     p = select.poll()
     p.register(f.stdout)
 
-    # v2.60 Logic: Universal Firewall Netfilter Regex (Matches Standard, Docker, GeoIP and ASN)
+    # v2.61 Logic: Universal Firewall Netfilter Regex (Matches Standard, Docker, GeoIP and ASN)
     regex_fw = re.compile(r"\[SysWarden-(BLOCK|DOCKER|GEO|ASN)\].*?SRC=([\d\.]+)")
     regex_dpt = re.compile(r"DPT=(\d+)")
     regex_f2b = re.compile(r"\[([a-zA-Z0-9_-]+)\]\s+Ban\s+([\d\.]+)")
@@ -4566,6 +4600,24 @@ setup_siem_logging() {
         SIEM_IP=${SYSWARDEN_SIEM_IP:-""}
         SIEM_PORT=${SYSWARDEN_SIEM_PORT:-514}
         SIEM_PROTO=${SYSWARDEN_SIEM_PROTO:-udp}
+
+        # --- SECURITY FIX: Strict Validation for Auto Mode ---
+        if [[ "$SIEM_ENABLED" =~ ^[Yy]$ ]]; then
+            if ! [[ "$SIEM_IP" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+                log "ERROR" "Auto Mode: Invalid SIEM_IP hostname/IP format. Disabling SIEM."
+                SIEM_ENABLED="n"
+            fi
+            if ! [[ "$SIEM_PORT" =~ ^[0-9]+$ ]] || [ "$SIEM_PORT" -lt 1 ] || [ "$SIEM_PORT" -gt 65535 ]; then
+                log "WARN" "Auto Mode: Invalid SIEM_PORT. Defaulting to 514."
+                SIEM_PORT=514
+            fi
+            SIEM_PROTO=$(echo "$SIEM_PROTO" | tr '[:upper:]' '[:lower:]')
+            if [[ "$SIEM_PROTO" != "tcp" && "$SIEM_PROTO" != "udp" ]]; then
+                log "WARN" "Auto Mode: Invalid SIEM_PROTO. Defaulting to udp."
+                SIEM_PROTO="udp"
+            fi
+        fi
+        # -----------------------------------------------------
         log "INFO" "Auto Mode: SIEM config loaded via env vars."
     else
         echo "Forward EXCLUSIVELY Fail2ban L7 attack logs to an external SIEM?"
@@ -5120,6 +5172,21 @@ setup_wazuh_agent() {
         W_GROUP=${SYSWARDEN_WAZUH_GROUP:-default}
         W_PORT_COMM=${SYSWARDEN_WAZUH_COMM_PORT:-1514}
         W_PORT_ENROLL=${SYSWARDEN_WAZUH_ENROLL_PORT:-1515}
+
+        # --- SECURITY FIX: Strict Validation for Auto Mode ---
+        if [[ -n "$WAZUH_IP" && ! "$WAZUH_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ && ! "$WAZUH_IP" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+            log "ERROR" "Auto Mode: Invalid WAZUH_IP format. Skipping Wazuh installation."
+            return
+        fi
+        if ! [[ "$W_PORT_COMM" =~ ^[0-9]+$ ]] || [ "$W_PORT_COMM" -lt 1 ] || [ "$W_PORT_COMM" -gt 65535 ]; then
+            log "WARN" "Auto Mode: Invalid W_PORT_COMM. Defaulting to 1514."
+            W_PORT_COMM=1514
+        fi
+        if ! [[ "$W_PORT_ENROLL" =~ ^[0-9]+$ ]] || [ "$W_PORT_ENROLL" -lt 1 ] || [ "$W_PORT_ENROLL" -gt 65535 ]; then
+            log "WARN" "Auto Mode: Invalid W_PORT_ENROLL. Defaulting to 1515."
+            W_PORT_ENROLL=1515
+        fi
+        # -----------------------------------------------------
         log "INFO" "Auto Mode: Wazuh settings loaded via env vars."
     else
         # IP Serveur
@@ -5257,7 +5324,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v2.60 - TELEMETRY BACKEND
+# SYSWARDEN v2.61 - TELEMETRY BACKEND
 # ==============================================================================
 function setup_telemetry_backend() {
     log "INFO" "Installation of the advanced telemetry engine (Backend)..."
@@ -5603,7 +5670,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v2.60 - NGINX SECURE DASHBOARD (ENTERPRISE SAAS UI / SPA / CSP)
+# SYSWARDEN v2.61 - NGINX SECURE DASHBOARD (ENTERPRISE SAAS UI / SPA / CSP)
 # ==============================================================================
 function generate_dashboard() {
     log "INFO" "Generating the Enterprise SaaS Nginx Dashboard (SPA/CSP)..."
@@ -5697,7 +5764,7 @@ function generate_dashboard() {
     <nav class="top-navbar">
         <div class="d-flex align-items-center gap-3">
             <svg style="color: var(--sw-brand-icon);" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
-            <h5 class="mb-0 fw-bold d-none d-md-block text-uppercase" style="letter-spacing: 0.5px; font-size: 1.1rem; color: var(--sw-text);">SYSWARDEN v2.60</h5>
+            <h5 class="mb-0 fw-bold d-none d-md-block text-uppercase" style="letter-spacing: 0.5px; font-size: 1.1rem; color: var(--sw-text);">SYSWARDEN v2.61</h5>
         </div>
         
         <div class="d-flex align-items-center gap-3 gap-md-4">
@@ -6940,7 +7007,7 @@ if [[ "$MODE" != "update" ]] && [[ "$MODE" != "uninstall" ]]; then
     echo -e "${RED}███████║   ██║   ███████║╚███╔███╔╝██║  ██║██║  ██║██████╔╝███████╗██║ ╚████║${NC}"
     echo -e "${RED}╚══════╝   ╚═╝   ╚══════╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═══╝${NC}"
     echo -e "${BLUE}===================================================================================${NC}"
-    echo -e "${GREEN}               Advanced Firewall & Blocklist Orchestrator | v2.60                  ${NC}"
+    echo -e "${GREEN}               Advanced Firewall & Blocklist Orchestrator | v2.61                  ${NC}"
     echo -e "${BLUE}===================================================================================${NC}\n"
 fi
 
@@ -6979,7 +7046,7 @@ if [[ "$MODE" != "update" ]]; then
         CYAN='\033[0;36m'
         clear
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
-        echo -e "${GREEN}${BOLD}                   SYSWARDEN v2.60 - PRE-FLIGHT CHECKLIST                     ${NC}"
+        echo -e "${GREEN}${BOLD}                   SYSWARDEN v2.61 - PRE-FLIGHT CHECKLIST                     ${NC}"
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
         echo -e "Before proceeding with the deployment, please ensure you have the following"
         echo -e "information ready. If you lack any required data, press [Ctrl+C] to abort,"
