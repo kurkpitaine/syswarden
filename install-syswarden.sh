@@ -33,13 +33,13 @@ LOG_FILE="/var/log/syswarden-install.log"
 CONF_FILE="/etc/syswarden.conf"
 SET_NAME="syswarden_blacklist"
 
-# --- SECURITY FIX: SECURE TMP DIR ---
+# --- SECURITY FIX: SECURE TMP DIR (CWE-377: Insecure Temporary File) ---
 # Ensure absolute privacy for the temporary directory to prevent unauthorized access
 TMP_DIR=$(mktemp -d -t syswarden-install-XXXXXX)
 chmod 0700 "$TMP_DIR"
 # ------------------------------------
 
-VERSION="v2.62"
+VERSION="v0.26.3"
 ACTIVE_PORTS=""
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
@@ -257,7 +257,7 @@ install_dependencies() {
         systemctl enable --now rsyslog 2>/dev/null || true
         touch /var/log/auth.log /var/log/kern.log /var/log/secure /var/log/messages 2>/dev/null || true
 
-        # --- SECURITY FIX: UNIVERSAL KERNEL LOGGING & LOG INJECTION PREVENTION ---
+        # --- SECURITY FIX: UNIVERSAL KERNEL LOGGING & LOG INJECTION PREVENTION (CWE-117: Improper Output Neutralization for Logs) ---
         # Force rsyslog to write all Netfilter drops and Auth logs to DEDICATED files.
         # This prevents unprivileged users from spoofing firewall drops (F3, F4, F5).
         if [[ -f /etc/rsyslog.conf ]]; then
@@ -370,7 +370,7 @@ define_ssh_port() {
         SSH_PORT=22
     fi
 
-    # --- SECURITY FIX: DISABLE TCP FORWARDING (ANTI-PIVOTING) ---
+    # --- SECURITY FIX: DISABLE TCP FORWARDING (ANTI-PIVOTING) (CWE-284: Improper Access Control) ---
     # Prevents attackers from using compromised low-privilege accounts to bypass the firewall
     if [[ -f /etc/ssh/sshd_config ]]; then
         log "INFO" "Ensuring SSH TCP Forwarding is strictly DISABLED..."
@@ -507,7 +507,7 @@ define_wireguard() {
             WG_PORT=${SYSWARDEN_WG_PORT:-51820}
             WG_SUBNET=${SYSWARDEN_WG_SUBNET:-"10.66.66.0/24"}
 
-            # --- SECURITY FIX: Strict Input Validation for Auto Mode ---
+            # --- SECURITY FIX: Strict Input Validation for Auto Mode (CWE-20: Improper Input Validation) ---
             if ! [[ "$WG_PORT" =~ ^[0-9]+$ ]] || [ "$WG_PORT" -lt 1 ] || [ "$WG_PORT" -gt 65535 ]; then
                 log "WARN" "Auto Mode: Invalid WG_PORT format. Defaulting to 51820."
                 WG_PORT=51820
@@ -530,7 +530,7 @@ define_wireguard() {
             WG_PORT=${SYSWARDEN_WG_PORT:-51820}
             WG_SUBNET=${SYSWARDEN_WG_SUBNET:-"10.66.66.0/24"}
         else
-            # --- SECURITY FIX: STRICT WG PORT & SUBNET VALIDATION ---
+            # --- SECURITY FIX: STRICT WG PORT & SUBNET VALIDATION (CWE-20: Improper Input Validation) ---
             while true; do
                 read -p "Enter WireGuard Port [Default: 51820]: " input_wg_port
                 WG_PORT=${input_wg_port:-51820}
@@ -689,11 +689,8 @@ auto_whitelist_admin() {
         admin_ip=$(echo "$SSH_CONNECTION" | awk '{print $1}' || true)
     fi
 
-    # --- SECURITY FIX: BULLETPROOF KERNEL SOCKET DETECTION ---
-    # If the user ran 'su -' or 'sudo su', SSH variables are wiped.
-    # We query active SSH sockets directly. Order-independent grep ensures
-    # compatibility across all versions of ss and netstat, while grep -oE
-    # perfectly extracts IPv4 even from IPv4-mapped IPv6 addresses (::ffff:IP).
+    # --- SECURITY FIX: BULLETPROOF KERNEL SOCKET DETECTION (CWE-345: Insufficient Verification of Data Authenticity) ---
+    # Query active SSH sockets directly instead of relying on easily wiped SSH variables.
     if [[ -z "$admin_ip" || ! "$admin_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         local current_tty
         current_tty=$(tty 2>/dev/null | sed 's#/dev/##' || true)
@@ -703,7 +700,7 @@ auto_whitelist_admin() {
         fi
     fi
 
-    # Fallback ultime via les sockets SSHD si aucune TTY n'est détectée (ex: CI/CD Pipeline)
+    # Ultimate fallback via SSHD sockets if no TTY is detected (e.g. CI/CD Pipeline)
     if [[ -z "$admin_ip" || ! "$admin_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         if command -v ss >/dev/null; then
             admin_ip=$(ss -tnp 2>/dev/null | grep -i 'estab' | grep -i 'sshd' | awk '{print $5}' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
@@ -759,7 +756,7 @@ process_auto_whitelist() {
         # Ignore empty strings
         if [[ -z "$ip" ]]; then continue; fi
 
-        # --- SECURITY FIX: STRICT IPV4 VALIDATION ---
+        # --- SECURITY FIX: STRICT IPV4 VALIDATION (CWE-20: Improper Input Validation) ---
         # Prevents malicious or malformed strings from crashing the firewall daemon
         if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$ip" != "127.0.0.1" ]]; then
             if ! grep -q "^${ip}$" "$WHITELIST_FILE" 2>/dev/null; then
@@ -918,7 +915,7 @@ select_list_type() {
             if [[ "${1:-}" == "auto" ]]; then
                 CUSTOM_URL=${SYSWARDEN_CUSTOM_URL:-""}
 
-                # --- SECURITY FIX: Strict URL Validation & Anti-Poisoning ---
+                # --- SECURITY FIX: Strict URL Validation & Anti-Poisoning (CWE-20: Improper Input Validation) ---
                 # Strip newlines (\r\n) and dangerous escape characters
                 CUSTOM_URL=$(echo "$CUSTOM_URL" | tr -d "\r\n '\"\;\$\|\&\<\>\`")
 
@@ -931,7 +928,7 @@ select_list_type() {
                 # ---------------------------------------------------------
                 log "INFO" "Auto Mode: Custom URL loaded via env var"
             else
-                # --- SECURITY FIX: STRICT URL VALIDATION (INTERACTIVE) ---
+                # --- SECURITY FIX: STRICT URL VALIDATION (INTERACTIVE) (CWE-20: Improper Input Validation) ---
                 while true; do
                     read -p "Enter the full URL (must be raw .txt format): " CUSTOM_URL
 
@@ -997,7 +994,7 @@ define_geoblocking() {
         fi
 
         GEOBLOCK_COUNTRIES=${geo_codes:-ru cn kp ir}
-        # --- SECURITY FIX: STRICT INPUT SANITIZATION ---
+        # --- SECURITY FIX: STRICT INPUT SANITIZATION (CWE-20: Improper Input Validation) ---
         # Strip all characters except letters and spaces to prevent command injection
         # or malformed URLs during the curl fetch phase.
         GEOBLOCK_COUNTRIES=$(echo "$GEOBLOCK_COUNTRIES" | tr -cd 'a-zA-Z ' | tr '[:upper:]' '[:lower:]')
@@ -1012,7 +1009,7 @@ define_geoblocking() {
 define_asnblocking() {
     if [[ "${1:-}" == "update" ]] && [[ -f "$CONF_FILE" ]]; then
         if [[ -z "${BLOCK_ASNS:-}" ]]; then BLOCK_ASNS="none"; fi
-        # Rétrocompatibilité : si la variable Spamhaus n'existe pas dans le conf, on l'active par défaut
+        # Backward compatibility: if Spamhaus variable doesn't exist in config, enable by default
         if [[ -z "${USE_SPAMHAUS_ASN:-}" ]]; then USE_SPAMHAUS_ASN="y"; fi
         log "INFO" "Update Mode: Preserving ASN-Blocking setting ($BLOCK_ASNS, Spamhaus: $USE_SPAMHAUS_ASN)"
         return
@@ -1056,7 +1053,7 @@ define_asnblocking() {
             BLOCK_ASNS="none"
             log "WARN" "No custom ASNs provided and Spamhaus declined. ASN Blocking DISABLED."
         else
-            # --- SECURITY FIX: STRICT INPUT SANITIZATION ---
+            # --- SECURITY FIX: STRICT INPUT SANITIZATION (CWE-20: Improper Input Validation) ---
             # Allow only alphanumeric characters and spaces to prevent whois command injection.
             if [[ "$BLOCK_ASNS" != "none" ]]; then
                 BLOCK_ASNS=$(echo "$BLOCK_ASNS" | tr -cd 'a-zA-Z0-9 ' | tr '[:lower:]' '[:upper:]')
@@ -1085,7 +1082,7 @@ define_ha_cluster() {
         HA_ENABLED=${SYSWARDEN_HA_ENABLED:-n}
         HA_PEER_IP=${SYSWARDEN_HA_PEER_IP:-""}
 
-        # --- SECURITY FIX: Strict IPV4 Validation for Auto Mode ---
+        # --- SECURITY FIX: Strict IPV4 Validation for Auto Mode (CWE-20: Improper Input Validation) ---
         if [[ "$HA_ENABLED" =~ ^[Yy]$ ]] && ! [[ "$HA_PEER_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
             log "ERROR" "Auto Mode: Invalid HA_PEER_IP IPv4 format. Disabling HA Cluster."
             HA_ENABLED="n"
@@ -1099,7 +1096,7 @@ define_ha_cluster() {
 
         if [[ "$input_ha" =~ ^[Yy]$ ]]; then
             HA_ENABLED="y"
-            # --- SECURITY FIX: STRICT IPV4 VALIDATION LOOP ---
+            # --- SECURITY FIX: STRICT IPV4 VALIDATION LOOP (CWE-20: Improper Input Validation) ---
             while true; do
                 read -p "Enter Standby Node IP (Must be accessible via SSH keys): " HA_PEER_IP
                 if [[ "$HA_PEER_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
@@ -1231,7 +1228,7 @@ download_list() {
 
     local output_file="$TMP_DIR/blocklist.txt"
     if curl -sS -L --retry 3 --connect-timeout 10 "$SELECTED_URL" -o "$output_file"; then
-        # --- SECURITY FIX: STRICT CIDR SEMANTIC VALIDATION ---
+        # --- SECURITY FIX: STRICT CIDR SEMANTIC VALIDATION (CWE-20: Improper Input Validation) ---
         # Validates exact octet ranges (0-255) and subnet masks (0-32) to prevent firewall crash (F13)
         tr -d '\r' <"$output_file" | awk -F'[/.]' 'NF==4 || NF==5 {
             valid=1; for(i=1;i<=4;i++) if($i<0 || $i>255 || $i=="") valid=0;
@@ -1280,7 +1277,7 @@ download_osint() {
     if [[ -s "$osint_raw" ]]; then
         log "INFO" "Sanitizing OSINT IPs and merging with the main blocklist..."
 
-        # --- SECURITY FIX: STRICT CIDR SEMANTIC VALIDATION ---
+        # --- SECURITY FIX: STRICT CIDR SEMANTIC VALIDATION (CWE-20: Improper Input Validation) ---
         # Ensures that only valid IPv4 addresses are passed to the firewall engine (Anti-Crash)
         tr -d '\r' <"$osint_raw" | awk -F'[/.]' 'NF==4 || NF==5 {
             valid=1; for(i=1;i<=4;i++) if($i<0 || $i>255 || $i=="") valid=0;
@@ -1323,7 +1320,7 @@ download_geoip() {
 
     if [[ -s "$TMP_DIR/geoip_raw.txt" ]]; then
         # Ensure valid CIDR formats and remove duplicates
-        # --- SECURITY FIX: STRICT CIDR SEMANTIC VALIDATION ---
+        # --- SECURITY FIX: STRICT CIDR SEMANTIC VALIDATION (CWE-20: Improper Input Validation) ---
         awk -F'[/.]' 'NF==4 || NF==5 {
             valid=1; for(i=1;i<=4;i++) if($i<0 || $i>255 || $i=="") valid=0;
             if(NF==5 && ($5<0 || $5>32 || $5=="")) valid=0;
@@ -1338,7 +1335,7 @@ download_geoip() {
 }
 
 download_asn() {
-    # On sort si l'utilisateur n'a rien mis en perso ET a dit non à Spamhaus
+    # Exit if user provided no custom ASNs AND declined Spamhaus
     if [[ "${BLOCK_ASNS:-none}" == "none" ]] && [[ "${USE_SPAMHAUS_ASN:-n}" == "n" ]]; then
         return
     fi
@@ -1746,7 +1743,7 @@ EOF
             # 3. Allow WireGuard UDP port for tunnel establishment
             firewall-cmd --permanent --add-port="${WG_PORT:-51820}/udp" >/dev/null 2>&1 || true
 
-            # --- STRICT ZERO TRUST HIERARCHY (v2.62) - DEBIAN PARITY) ---
+            # --- STRICT ZERO TRUST HIERARCHY (v0.26.3) - DEBIAN PARITY) ---
 
             # Priority -1000: Highest priority. Allow SSH & Dashboard strictly from VPN.
             firewall-cmd --permanent --add-rich-rule="rule priority='-1000' family='ipv4' source address='${WG_SUBNET}' port port='${SSH_PORT:-22}' protocol='tcp' accept" >/dev/null 2>&1 || true
@@ -2227,7 +2224,7 @@ configure_fail2ban() {
     if command -v fail2ban-client >/dev/null; then
         log "INFO" "Generating Fail2ban configuration (Universal Mode)..."
 
-        # --- SECURITY FIX: PURGE CONFLICTING DEFAULT JAILS (SCORCHED EARTH) ---
+        # --- SECURITY FIX: PURGE CONFLICTING DEFAULT JAILS (SCORCHED EARTH) (CWE-1188: Insecure Default Initialization) ---
         # OS package managers silently inject .conf, .local, or symlinks
         # (like defaults-debian.conf) that spawn Ghost Jails like mysqld-auth.
         # We destroy and recreate the directory to guarantee absolute Zero Trust.
@@ -4081,7 +4078,7 @@ setup_wireguard() {
             ;;
     esac
 
-    # --- SECURITY FIX: PREVENT TOCTOU RACE CONDITION ON KEYS ---
+    # --- SECURITY FIX: PREVENT TOCTOU RACE CONDITION ON KEYS (CWE-367: Time-of-check Time-of-use (TOCTOU) Race Condition) ---
     # Enclosing file creation in a umask 077 subshell to ensure native 600 permissions
     (
         umask 077
@@ -4181,7 +4178,7 @@ add_wireguard_client() {
 
     log "INFO" "Generating keys for $client_name..."
 
-    # --- SECURITY FIX: PREVENT TOCTOU RACE CONDITION ON KEYS ---
+    # --- SECURITY FIX: PREVENT TOCTOU RACE CONDITION ON KEYS (CWE-367: Time-of-check Time-of-use (TOCTOU) Race Condition) ---
     # We use a subshell with a strict umask (077). This mathematically guarantees
     # that the configuration files are created with 600 permissions natively.
     (
@@ -4433,7 +4430,7 @@ def monitor_logs():
     p = select.poll()
     p.register(f.stdout)
 
-    # v2.62 Logic: Universal Firewall Netfilter Regex (Matches Standard, Docker, GeoIP and ASN)
+    # v0.26.3 Logic: Universal Firewall Netfilter Regex (Matches Standard, Docker, GeoIP and ASN)
     regex_fw = re.compile(r"\[SysWarden-(BLOCK|DOCKER|GEO|ASN)\].*?SRC=([\d\.]+)")
     regex_dpt = re.compile(r"DPT=(\d+)")
     regex_f2b = re.compile(r"\[([a-zA-Z0-9_-]+)\]\s+Ban\s+([\d\.]+)")
@@ -4549,7 +4546,7 @@ EOF
         sed -i "s/PLACEHOLDER_F2B/$PY_F2B/" /usr/local/bin/syswarden_reporter.py
         sed -i "s/PLACEHOLDER_FW/$PY_FW/" /usr/local/bin/syswarden_reporter.py
 
-        # --- SECURITY FIX: SECURE ABUSEIPDB API KEY ---
+        # --- SECURITY FIX: SECURE ABUSEIPDB API KEY (CWE-732: Incorrect Permission Assignment for Critical Resource) ---
         # The python script contains the API key in plain text.
         # We enforce absolute root ownership so no non-privileged user can view the code.
         chown root:root /usr/local/bin/syswarden_reporter.py
@@ -4614,7 +4611,7 @@ setup_siem_logging() {
         SIEM_PORT=${SYSWARDEN_SIEM_PORT:-514}
         SIEM_PROTO=${SYSWARDEN_SIEM_PROTO:-udp}
 
-        # --- SECURITY FIX: Strict Validation for Auto Mode ---
+        # --- SECURITY FIX: Strict Validation for Auto Mode (CWE-20: Improper Input Validation) ---
         if [[ "$SIEM_ENABLED" =~ ^[Yy]$ ]]; then
             if ! [[ "$SIEM_IP" =~ ^[a-zA-Z0-9.-]+$ ]]; then
                 log "ERROR" "Auto Mode: Invalid SIEM_IP hostname/IP format. Disabling SIEM."
@@ -4638,7 +4635,7 @@ setup_siem_logging() {
         if [[ "$response_siem" =~ ^[Yy]$ ]]; then
             SIEM_ENABLED="y"
 
-            # --- SECURITY FIX: STRICT INPUT VALIDATION LOOPS ---
+            # --- SECURITY FIX: STRICT INPUT VALIDATION LOOPS (CWE-20: Improper Input Validation) ---
             while true; do
                 read -p "Enter SIEM IP/Hostname: " SIEM_IP
                 # Basic Hostname/IP validation (alphanumeric, dots, hyphens)
@@ -5186,7 +5183,7 @@ setup_wazuh_agent() {
         W_PORT_COMM=${SYSWARDEN_WAZUH_COMM_PORT:-1514}
         W_PORT_ENROLL=${SYSWARDEN_WAZUH_ENROLL_PORT:-1515}
 
-        # --- SECURITY FIX: Strict Validation for Auto Mode ---
+        # --- SECURITY FIX: Strict Validation for Auto Mode (CWE-20: Improper Input Validation) ---
         if [[ -n "$WAZUH_IP" && ! "$WAZUH_IP" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ && ! "$WAZUH_IP" =~ ^[a-zA-Z0-9.-]+$ ]]; then
             log "ERROR" "Auto Mode: Invalid WAZUH_IP format. Skipping Wazuh installation."
             return
@@ -5226,7 +5223,7 @@ setup_wazuh_agent() {
         W_PORT_ENROLL=${W_PORT_ENROLL:-1515}
     fi
 
-    # --- SECURITY FIX: SANITIZE WAZUH STRINGS ---
+    # --- SECURITY FIX: SANITIZE WAZUH STRINGS (CWE-20: Improper Input Validation) ---
     # Strip dangerous characters that could break the agent's OS environment exports
     W_NAME=$(echo "$W_NAME" | tr -cd 'a-zA-Z0-9.-')
     W_GROUP=$(echo "$W_GROUP" | tr -cd 'a-zA-Z0-9_-')
@@ -5337,7 +5334,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v2.62 - TELEMETRY BACKEND
+# SYSWARDEN v0.26.3 - TELEMETRY BACKEND
 # ==============================================================================
 function setup_telemetry_backend() {
     log "INFO" "Installation of the advanced telemetry engine (Backend)..."
@@ -5351,7 +5348,7 @@ function setup_telemetry_backend() {
 set -euo pipefail
 IFS=$'\n\t'
 
-# --- SECURITY FIX: ZOMBIE PROCESS PREVENTION ---
+# --- SECURITY FIX: ZOMBIE PROCESS PREVENTION (CWE-400: Uncontrolled Resource Consumption) ---
 trap 'wait' EXIT
 
 # --- HOTFIX: ABSOLUTE MUTEX LOCK (ANTI-OVERLAP) ---
@@ -5426,7 +5423,7 @@ FW_NAME="Unknown Firewall"
 FW_PATH="unknown"
 FW_STATUS="offline"
 
-# SECURITY FIX: Cron environments notoriously lack /usr/sbin in their PATH. 
+# SECURITY FIX: Cron environments notoriously lack /usr/sbin in their PATH. (CWE-426: Untrusted Search Path) 
 # We explicitly export the full administrative PATH to resolve binaries like 'nft' or 'iptables'.
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
@@ -5683,7 +5680,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v2.62 - NGINX SECURE DASHBOARD (ENTERPRISE SAAS UI / SPA / CSP)
+# SYSWARDEN v0.26.3 - NGINX SECURE DASHBOARD (ENTERPRISE SAAS UI / SPA / CSP)
 # ==============================================================================
 function generate_dashboard() {
     log "INFO" "Generating the Enterprise SaaS Nginx Dashboard (SPA/CSP)..."
@@ -5777,7 +5774,7 @@ function generate_dashboard() {
     <nav class="top-navbar">
         <div class="d-flex align-items-center gap-3">
             <svg style="color: var(--sw-brand-icon);" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
-            <h5 class="mb-0 fw-bold d-none d-md-block text-uppercase" style="letter-spacing: 0.5px; font-size: 1.1rem; color: var(--sw-text);">SYSWARDEN v2.62</h5>
+            <h5 class="mb-0 fw-bold d-none d-md-block text-uppercase" style="letter-spacing: 0.5px; font-size: 1.1rem; color: var(--sw-text);">SYSWARDEN v0.26.3</h5>
         </div>
         
         <div class="d-flex align-items-center gap-3 gap-md-4">
@@ -6655,7 +6652,7 @@ check_upgrade() {
             return
         fi
 
-        # --- SECURITY FIX: MITM PROTECTION & SECURE UPDATE ---
+        # --- SECURITY FIX: MITM PROTECTION & SECURE UPDATE (CWE-494: Download of Code Without Integrity Check) ---
         echo -e "${YELLOW}Downloading and verifying update securely...${NC}"
 
         # --- HOTFIX: SAME-FILE COLLISION PREVENTION ---
@@ -6796,10 +6793,10 @@ show_alerts_dashboard() {
             # --- HOTFIX: Dynamic Target Info (Port vs Protocol for ICMP/IGMP) ---
             target_info = "PORT: N/A"
             if (match($0, /DPT=[0-9]+/)) {
-                # Extraction du port si présent (TCP/UDP)
+                # Extract port if present (TCP/UDP)
                 target_info = "PORT: " substr($0, RSTART+4, RLENGTH-4)
             } else if (match($0, /PROTO=[A-Za-z0-9]+/)) {
-                # Repli sur le protocole si pas de port (Ex: ICMP)
+                # Fallback to protocol if no port provided (e.g. ICMP)
                 target_info = "PROTO: " substr($0, RSTART+6, RLENGTH-6)
             }
             
@@ -6854,7 +6851,7 @@ MODE="${1:-install}"
 if [[ -f "${1:-}" ]]; then
     echo -e "${GREEN}>>> Unattended configuration file detected: $1${NC}"
 
-    # --- SECURITY FIX: SECURE AUTO-CONF FILE ---
+    # --- SECURITY FIX: SECURE AUTO-CONF FILE (CWE-732: Incorrect Permission Assignment for Critical Resource) ---
     # Restrict permissions immediately so local non-root users cannot read
     # the secrets inside (e.g., API keys, custom network configurations)
     chmod 600 "$1"
@@ -7020,7 +7017,7 @@ if [[ "$MODE" != "update" ]] && [[ "$MODE" != "uninstall" ]]; then
     echo -e "${RED}███████║   ██║   ███████║╚███╔███╔╝██║  ██║██║  ██║██████╔╝███████╗██║ ╚████║${NC}"
     echo -e "${RED}╚══════╝   ╚═╝   ╚══════╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═══╝${NC}"
     echo -e "${BLUE}===================================================================================${NC}"
-    echo -e "${GREEN}               Advanced Firewall & Blocklist Orchestrator | v2.62                  ${NC}"
+    echo -e "${GREEN}               Advanced Firewall & Blocklist Orchestrator | v0.26.3                  ${NC}"
     echo -e "${BLUE}===================================================================================${NC}\n"
 fi
 
@@ -7059,7 +7056,7 @@ if [[ "$MODE" != "update" ]]; then
         CYAN='\033[0;36m'
         clear
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
-        echo -e "${GREEN}${BOLD}                   SYSWARDEN v2.62 - PRE-FLIGHT CHECKLIST                     ${NC}"
+        echo -e "${GREEN}${BOLD}                   SYSWARDEN v0.26.3 - PRE-FLIGHT CHECKLIST                     ${NC}"
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
         echo -e "Before proceeding with the deployment, please ensure you have the following"
         echo -e "information ready. If you lack any required data, press [Ctrl+C] to abort,"
