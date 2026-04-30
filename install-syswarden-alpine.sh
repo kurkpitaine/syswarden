@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# SysWarden for Alpine Linux - Advanced Firewall & Blocklist Orchestrator
+# SysWarden for Alpine Linux - An ultra-lightweight Host-based Security Orchestrator for Linux.
 # Copyright (C) 2026 duggytuxy - Laurent M.
 #
 # This program is free software: you can redistribute it and/or modify
@@ -45,7 +45,7 @@ SET_NAME="syswarden_blacklist"
 # Ensure absolute privacy for the temporary directory to prevent unauthorized access
 TMP_DIR=$(mktemp -d -t syswarden-install-XXXXXX)
 chmod 0700 "$TMP_DIR"
-VERSION="v0.26.3"
+VERSION="v0.27.0"
 ACTIVE_PORTS=""
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
@@ -129,7 +129,8 @@ install_dependencies() {
         touch "$CONF_FILE"
         chmod 600 "$CONF_FILE"
     fi
-    if ! command -v nginx >/dev/null 2>&1; then
+    # Detect if ANY web server is already present to prevent uninstall disasters
+    if ! command -v nginx >/dev/null 2>&1 && ! command -v apache2 >/dev/null 2>&1 && ! command -v httpd >/dev/null 2>&1; then
         echo "NGINX_INSTALLED_BY_SYSWARDEN='y'" >>"$CONF_FILE"
     fi
     if ! command -v fail2ban-client >/dev/null 2>&1; then
@@ -137,13 +138,20 @@ install_dependencies() {
     fi
     # ==============================================================================
 
-    local deps="curl python3 py3-requests ipset fail2ban bash coreutils grep gawk sed procps logrotate ncurses whois rsyslog util-linux wireguard-tools libqrencode libqrencode-tools nginx openssl rsync openssh-client jq"
+    local deps="curl python3 py3-requests ipset fail2ban bash coreutils grep gawk sed procps logrotate ncurses whois rsyslog util-linux wireguard-tools libqrencode libqrencode-tools openssl rsync openssh-client jq"
 
     if [[ "$FIREWALL_BACKEND" == "nftables" ]]; then
         deps="$deps nftables"
     else
         deps="$deps iptables ip6tables"
     fi
+
+    # --- HOTFIX: WEB SERVER AS CORE DEPENDENCIES ---
+    # We install Nginx ONLY if absolutely no supported web server is found natively.
+    if ! command -v nginx >/dev/null 2>&1 && ! command -v apache2 >/dev/null 2>&1 && ! command -v httpd >/dev/null 2>&1; then
+        deps="$deps nginx"
+    fi
+    # -----------------------------------------------------------
 
     # --- ALPINE / POSIX FIX FOR IFS ---
     # Temporarily restore default IFS (space) so word splitting works for apk
@@ -160,10 +168,22 @@ install_dependencies() {
     IFS="$OLD_IFS" # Restore strict IFS for the rest of the script
     # ----------------------------------
 
-    # --- HOTFIX: PREEMPTIVE NGINX LOG CREATION ---
-    mkdir -p /var/log/nginx
-    touch /var/log/nginx/access.log /var/log/nginx/error.log
-    chmod 640 /var/log/nginx/*.log 2>/dev/null || true
+    # --- HOTFIX: PREEMPTIVE WEB LOG CREATION ---
+    # We guarantee the existence of Web logs immediately after package installation.
+    # This ensures Fail2ban naturally detects them and activates Layer 7 Web Jails natively.
+    if command -v apache2 >/dev/null 2>&1 || [[ -d /etc/apache2 ]]; then
+        mkdir -p /var/log/apache2
+        touch /var/log/apache2/access.log /var/log/apache2/error.log
+        chmod 640 /var/log/apache2/*.log 2>/dev/null || true
+    elif command -v httpd >/dev/null 2>&1 || [[ -d /etc/httpd ]]; then
+        mkdir -p /var/log/httpd
+        touch /var/log/httpd/access_log /var/log/httpd/error_log
+        chmod 640 /var/log/httpd/*_log 2>/dev/null || true
+    else
+        mkdir -p /var/log/nginx
+        touch /var/log/nginx/access.log /var/log/nginx/error.log
+        chmod 640 /var/log/nginx/*.log 2>/dev/null || true
+    fi
     # ----------------------------------------------------
 
     if ! command -v rc-update >/dev/null; then
@@ -3437,7 +3457,7 @@ def monitor_logs():
         proc_f2b.stdout.fileno(): 'f2b'
     }
 
-    # v0.26.3 Logic: Universal Firewall Netfilter Regex (Matches Standard, Docker, GeoIP and ASN)
+    # v0.27.0 Logic: Universal Firewall Netfilter Regex (Matches Standard, Docker, GeoIP and ASN)
     regex_fw = re.compile(r"\[SysWarden-(BLOCK|DOCKER|GEO|ASN)\].*?SRC=([\d\.]+)")
     regex_dpt = re.compile(r"DPT=(\d+)")
     regex_f2b = re.compile(r"\[([a-zA-Z0-9_-]+)\]\s+Ban\s+([\d\.]+)")
@@ -4196,9 +4216,27 @@ EOF
         rc-service fail2ban restart 2>/dev/null || true
     fi
 
-    # 5. Remove Nginx Dashboard (State Aware)
-    log "INFO" "Removing Nginx UI configuration..."
+    # 5. Remove UI Dashboard (State Aware for Apache & Nginx)
+    # --- HOTFIX: CLEAN UNINSTALL ---
+    log "INFO" "Removing Web Server UI configurations..."
+
+    # Apache Cleanup
+    rm -f /etc/apache2/sites-available/syswarden-ui.conf
+    rm -f /etc/apache2/sites-enabled/syswarden-ui.conf
+    rm -f /etc/apache2/conf.d/syswarden-ui.conf
+    rm -f /etc/httpd/conf.d/syswarden-ui.conf
+
+    if rc-service apache2 status 2>/dev/null | grep -q "started"; then
+        rc-service apache2 reload >/dev/null 2>&1 || true
+    elif rc-service httpd status 2>/dev/null | grep -q "started"; then
+        rc-service httpd reload >/dev/null 2>&1 || true
+    fi
+
+    # Nginx Cleanup
     rm -f /etc/nginx/http.d/syswarden-ui.conf
+    rm -f /etc/nginx/conf.d/syswarden-ui.conf
+    rm -f /etc/nginx/sites-available/syswarden-ui.conf
+    rm -f /etc/nginx/sites-enabled/syswarden-ui.conf
 
     if rc-service nginx status 2>/dev/null | grep -q "started"; then
         rc-service nginx reload >/dev/null 2>&1 || true
@@ -4210,6 +4248,7 @@ EOF
         rc-update del nginx default 2>/dev/null || true
         apk del nginx 2>/dev/null || true
     fi
+    # -----------------------------------------------------
 
     # 6. Remove Wazuh Agent (If installed)
     # DEVSECOPS FIX: Prevent unattended hang in CI/CD or Auto mode.
@@ -4396,7 +4435,7 @@ setup_wazuh_agent() {
 }
 
 # ==============================================================================
-# SYSWARDEN v0.26.3 - TELEMETRY BACKEND
+# SYSWARDEN v0.27.0 - TELEMETRY BACKEND
 # ==============================================================================
 function setup_telemetry_backend() {
     log "INFO" "Installation of the advanced telemetry engine (Backend)..."
@@ -4469,7 +4508,18 @@ L3_GLOBAL=0; L3_GEOIP=0; L3_ASN=0
 # --- System Services Tracking (Universal Pgrep) ---
 SRV_F2B=$(pgrep -f fail2ban-server >/dev/null && echo "active" || echo "offline")
 SRV_CRON=$(pgrep -f "cron|crond" >/dev/null && echo "active" || echo "offline")
-SRV_NGX=$(pgrep -f "nginx" >/dev/null && echo "active" || echo "offline")
+
+# --- Mutually Exclusive Web Server Tracking (XOR) ---
+if command -v apache2 >/dev/null 2>&1 || command -v httpd >/dev/null 2>&1; then
+    WEB_NAME="apache (worker)"
+    WEB_PATH="/usr/sbin/httpd"
+    [[ -f /usr/sbin/apache2 ]] && WEB_PATH="/usr/sbin/apache2"
+    WEB_STATUS=$(pgrep -f "apache2|httpd" >/dev/null && echo "active" || echo "offline")
+else
+    WEB_NAME="nginx (worker)"
+    WEB_PATH="/usr/sbin/nginx"
+    WEB_STATUS=$(pgrep -f "nginx" >/dev/null && echo "active" || echo "offline")
+fi
 
 # AbuseIPDB Reporter Tracking (3 States)
 if [[ -f "/usr/local/bin/syswarden_reporter.py" ]]; then
@@ -4487,8 +4537,6 @@ FW_NAME="Unknown Firewall"
 FW_PATH="unknown"
 FW_STATUS="offline"
 
-# SECURITY FIX: Cron environments notoriously lack /usr/sbin in their PATH. (CWE-426: Untrusted Search Path) 
-# We explicitly export the full administrative PATH to resolve binaries like 'nft' or 'iptables'.
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qw "active"; then
@@ -4510,12 +4558,12 @@ elif command -v iptables >/dev/null 2>&1 && { iptables -nL 2>/dev/null | grep -q
 fi
 
 SERVICES_JSON=$(jq -n \
-  --arg f2b "$SRV_F2B" --arg crn "$SRV_CRON" --arg ngx "$SRV_NGX" --arg rep "$SRV_REP" \
+  --arg f2b "$SRV_F2B" --arg crn "$SRV_CRON" --arg web_name "$WEB_NAME" --arg web_path "$WEB_PATH" --arg web_status "$WEB_STATUS" --arg rep "$SRV_REP" \
   --arg fw_name "$FW_NAME" --arg fw_path "$FW_PATH" --arg fw_status "$FW_STATUS" \
   '[
     {"name":"fail2ban-server","path":"/usr/bin/fail2ban-server","status":$f2b},
     {"name":$fw_name,"path":$fw_path,"status":$fw_status},
-    {"name":"nginx (worker)","path":"/usr/sbin/nginx","status":$ngx},
+    {"name":$web_name,"path":$web_path,"status":$web_status},
     {"name":"cron/crond","path":"/usr/sbin/cron","status":$crn},
     {"name":"syswarden-reporter","path":"/usr/local/bin/syswarden_reporter.py","status":$rep},
     {"name":"syswarden-telemetry","path":"/usr/local/bin/syswarden-telemetry.sh","status":"active"}
@@ -4744,7 +4792,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v0.26.3 - NGINX SECURE DASHBOARD (ENTERPRISE SAAS UI / SPA / CSP)
+# SYSWARDEN v0.27.0 - NGINX / APACHESECURE DASHBOARD (ENTERPRISE SAAS UI / SPA / CSP)
 # ==============================================================================
 function generate_dashboard() {
     log "INFO" "Generating the Enterprise SaaS Nginx Dashboard (SPA/Sidebar/CSP)..."
@@ -4755,6 +4803,14 @@ function generate_dashboard() {
     # HOTFIX: Directory Traversal for Nginx worker
     chmod 755 /etc/syswarden
     chmod 755 "$UI_DIR"
+
+    if id "www-data" >/dev/null 2>&1; then
+        chown root:www-data /etc/syswarden "$UI_DIR"
+    elif id "apache" >/dev/null 2>&1; then
+        chown root:apache /etc/syswarden "$UI_DIR"
+    elif id "nginx" >/dev/null 2>&1; then
+        chown root:nginx /etc/syswarden "$UI_DIR"
+    fi
 
     # 1. Generating the HTML file (Enterprise Sidebar Structure)
     cat <<'EOF' >"$UI_DIR/index.html"
@@ -4833,7 +4889,7 @@ function generate_dashboard() {
     <nav class="top-navbar">
         <div class="d-flex align-items-center gap-3">
             <svg style="color: var(--sw-brand-icon);" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
-            <h5 class="mb-0 fw-bold d-none d-md-block text-uppercase" style="letter-spacing: 0.5px; font-size: 1.1rem; color: var(--sw-text);">SYSWARDEN v0.26.3</h5>
+            <h5 class="mb-0 fw-bold d-none d-md-block text-uppercase" style="letter-spacing: 0.5px; font-size: 1.1rem; color: var(--sw-text);">SYSWARDEN v0.27.0</h5>
         </div>
         
         <div class="d-flex align-items-center gap-3 gap-md-4">
@@ -5339,23 +5395,29 @@ function generate_dashboard() {
 </html>
 EOF
 
-    # --- 3. DYNAMIC ACCESS CONTROL (Nginx IP Whitelisting) ---
+    # --- 3. DYNAMIC ACCESS CONTROL (IP Whitelisting) ---
     local NGINX_ALLOW_RULES=""
+    local APACHE_ALLOW_RULES=""
+
     if [[ -s "$WHITELIST_FILE" ]]; then
         while IFS= read -r wl_ip; do
             [[ -z "$wl_ip" ]] || [[ "$wl_ip" =~ ^# ]] && continue
             NGINX_ALLOW_RULES+="        allow $wl_ip;\n"
+            APACHE_ALLOW_RULES+="        Require ip $wl_ip\n"
         done <"$WHITELIST_FILE"
     fi
 
     # Allow WireGuard Subnet if active
     if [[ "${USE_WIREGUARD:-n}" == "y" ]]; then
         NGINX_ALLOW_RULES+="        allow ${WG_SUBNET};\n"
+        APACHE_ALLOW_RULES+="        Require ip ${WG_SUBNET}\n"
     fi
 
     # Fallback to Localhost and Drop the rest
     NGINX_ALLOW_RULES+="        allow 127.0.0.1;\n"
     NGINX_ALLOW_RULES+="        deny all;"
+    APACHE_ALLOW_RULES+="        Require ip 127.0.0.1\n"
+    # Apache uses 'Require all denied' implicitly via <RequireAny> block exclusion.
 
     # --- 4. CRYPTOGRAPHY (Self-Signed TLS) ---
     local SSL_DIR="/etc/syswarden/ssl"
@@ -5369,20 +5431,75 @@ EOF
         chmod 600 "$SSL_DIR/syswarden.key"
     fi
 
-    # --- 5. NGINX VHOST CONFIGURATION (ALPINE SPECIFIC PATH) ---
-    log "INFO" "Configuring Nginx reverse proxy for port 9999..."
+    # --- 5. WEB SERVER VHOST CONFIGURATION (Apache or Nginx) ---
+    if command -v apache2 >/dev/null 2>&1 || command -v httpd >/dev/null 2>&1; then
+        log "INFO" "Apache detected. Configuring Apache VHost for port 9999..."
+        # Alpine uses /etc/apache2/conf.d, standard uses sites-available
+        local APACHE_CONF_DIR="/etc/apache2/conf.d"
+        local APACHE_DAEMON="apache2"
 
-    # DEVSECOPS FIX: Dynamic Nginx versioning to handle http2 directive deprecation (Nginx >= 1.25.1)
-    local NGINX_HTTP2_DIRECTIVE="listen 9999 ssl http2;"
-    if nginx -v 2>&1 | grep -qE "nginx/1\.(2[5-9]|[3-9][0-9])"; then
-        NGINX_HTTP2_DIRECTIVE="listen 9999 ssl;
+        if command -v httpd >/dev/null 2>&1 || [[ -d "/etc/httpd" ]]; then
+            APACHE_CONF_DIR="/etc/httpd/conf.d"
+            APACHE_DAEMON="httpd"
+        fi
+        if [[ -d "/etc/apache2/sites-available" ]]; then
+            APACHE_CONF_DIR="/etc/apache2/sites-available"
+        fi
+
+        mkdir -p "$APACHE_CONF_DIR"
+        cat <<EOF >"$APACHE_CONF_DIR/syswarden-ui.conf"
+Listen 9999
+<VirtualHost *:9999>
+    DocumentRoot "$UI_DIR"
+    SSLEngine on
+    SSLCertificateFile "$SSL_DIR/syswarden.crt"
+    SSLCertificateKeyFile "$SSL_DIR/syswarden.key"
+
+    <Directory "$UI_DIR">
+        Options -Indexes +FollowSymLinks
+        AllowOverride None
+        <RequireAny>
+$(echo -e "$APACHE_ALLOW_RULES")
+        </RequireAny>
+    </Directory>
+
+    # Strict Security Headers
+    Header always set Content-Security-Policy "default-src 'self'; connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://api.github.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com;"
+    Header always set X-Frame-Options "DENY"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Strict-Transport-Security "max-age=63072000; includeSubDomains"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set Permissions-Policy "geolocation=(), microphone=(), camera=()"
+</VirtualHost>
+EOF
+
+        if command -v a2enmod >/dev/null 2>&1; then
+            a2enmod ssl headers >/dev/null 2>&1 || true
+        fi
+        if [[ -d "/etc/apache2/sites-enabled" ]]; then
+            ln -sf "$APACHE_CONF_DIR/syswarden-ui.conf" "/etc/apache2/sites-enabled/syswarden-ui.conf" 2>/dev/null || true
+        fi
+    else
+        log "INFO" "Configuring Nginx VHost for port 9999..."
+        local NGINX_CONF_DIR="/etc/nginx/http.d"
+        if [[ -d "/etc/nginx/conf.d" ]]; then
+            NGINX_CONF_DIR="/etc/nginx/conf.d"
+        fi
+        if [[ -d "/etc/nginx/sites-available" ]]; then
+            NGINX_CONF_DIR="/etc/nginx/sites-available"
+        fi
+
+        # HTTP/2 directive handling for backward compatibility (Nginx >= 1.25.1)
+        local NGINX_HTTP2_DIRECTIVE="listen 9999 ssl http2;"
+        if nginx -v 2>&1 | grep -qE "nginx/1\.(2[5-9]|[3-9][0-9])"; then
+            NGINX_HTTP2_DIRECTIVE="listen 9999 ssl;
     http2 on;"
-    fi
+        fi
 
-    cat <<EOF >/etc/nginx/http.d/syswarden-ui.conf
+        cat <<EOF >"$NGINX_CONF_DIR/syswarden-ui.conf"
 server {
     $NGINX_HTTP2_DIRECTIVE
-	server_name _;
+    server_name _;
 
     # TLS Encryption
     ssl_certificate $SSL_DIR/syswarden.crt;
@@ -5395,7 +5512,6 @@ server {
     index index.html;
     
     include mime.types;
-    # SECURITY FIX: Removed custom woff2 type block. Modern Nginx already includes it in mime.types. (CWE-436: Interpretation Conflict)
 
     # --- Security Access Control (Only Admin IP) ---
 $(echo -e "$NGINX_ALLOW_RULES")
@@ -5421,7 +5537,23 @@ $(echo -e "$NGINX_ALLOW_RULES")
 }
 EOF
 
-    # --- 6. DAEMON ORCHESTRATION (ALPINE OPENRC) ---
+        if [[ -d "/etc/nginx/sites-enabled" ]]; then
+            ln -sf "$NGINX_CONF_DIR/syswarden-ui.conf" "/etc/nginx/sites-enabled/syswarden-ui.conf"
+            rm -f /etc/nginx/sites-enabled/default
+        fi
+    fi
+
+    # --- 6. EXPOSE DASHBOARD PORT NATIVELY ---
+    # [Alpine Nftables bypass routing handled in apply_firewall_rules()]
+    # Local fallback for Iptables backward compatibility
+    if [[ "$FIREWALL_BACKEND" == "iptables" ]]; then
+        if ! iptables -C INPUT -p tcp --dport 9999 -j ACCEPT 2>/dev/null; then
+            iptables -I INPUT 1 -p tcp --dport 9999 -j ACCEPT
+            /etc/init.d/iptables save >/dev/null 2>&1 || true
+        fi
+    fi
+
+    # --- 7. DAEMON ORCHESTRATION (ALPINE OPENRC) ---
     # Cleanup legacy Python server if upgrading
     if rc-service syswarden-ui status 2>/dev/null | grep -q "started"; then
         rc-service syswarden-ui stop >/dev/null 2>&1 || true
@@ -5429,22 +5561,29 @@ EOF
         rm -f /etc/init.d/syswarden-ui /usr/local/bin/syswarden-ui-server.py
     fi
 
-    # Start or Reload Nginx
-    if rc-service nginx status 2>/dev/null | grep -q "started"; then
-        rc-service nginx reload >/dev/null 2>&1 || true
+    if command -v apache2 >/dev/null 2>&1 || command -v httpd >/dev/null 2>&1; then
+        local APACHE_SVC="apache2"
+        if command -v httpd >/dev/null 2>&1; then APACHE_SVC="httpd"; fi
+
+        rc-update add "$APACHE_SVC" default >/dev/null 2>&1 || true
+        if rc-service "$APACHE_SVC" status 2>/dev/null | grep -q "started"; then
+            rc-service "$APACHE_SVC" reload >/dev/null 2>&1 || true
+        else
+            rc-service "$APACHE_SVC" start >/dev/null 2>&1 || true
+        fi
     else
-        rc-update add nginx default >/dev/null 2>&1
-        rc-service nginx start >/dev/null 2>&1 || true
+        rc-update add nginx default >/dev/null 2>&1 || true
+        if rc-service nginx status 2>/dev/null | grep -q "started"; then
+            rc-service nginx reload >/dev/null 2>&1 || true
+        else
+            rc-service nginx start >/dev/null 2>&1 || true
+        fi
     fi
 
-    # --- HOTFIX: DYNAMIC IP RESOLUTION ---
-    # 1. Tries to get the Public IPv4 via curl or wget
-    # 2. Fallbacks to the primary active local IP via routing table if offline
-    # 3. Failsafe to '<YOUR_IP>' if everything else fails
     local SERVER_IP
     SERVER_IP=$(curl -sL4 https://ifconfig.me 2>/dev/null || wget -qO- https://ifconfig.me 2>/dev/null || ip -4 route get 1.1.1.1 2>/dev/null | awk '/src/ {for (i=1; i<=NF; i++) if ($i == "src") print $(i+1)}' | head -n 1 || echo "<YOUR_IP>")
 
-    log "INFO" "Dashboard UI secured by Nginx at https://${SERVER_IP}:9999"
+    log "INFO" "Dashboard UI secured by Web Server at https://${SERVER_IP}:9999"
 }
 
 whitelist_ip() {
@@ -6005,7 +6144,7 @@ if [[ "$MODE" != "update" ]] && [[ "$MODE" != "uninstall" ]]; then
     echo -e "${RED}███████║   ██║   ███████║╚███╔███╔╝██║  ██║██║  ██║██████╔╝███████╗██║ ╚████║${NC}"
     echo -e "${RED}╚══════╝   ╚═╝   ╚══════╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═══╝${NC}"
     echo -e "${BLUE}===================================================================================${NC}"
-    echo -e "${GREEN}               Advanced Firewall & Blocklist Orchestrator | v0.26.3                  ${NC}"
+    echo -e "${GREEN}              Host-based Security Orchestrator for Linux.  | v0.27.0                  ${NC}"
     echo -e "${BLUE}===================================================================================${NC}\n"
 fi
 
@@ -6027,7 +6166,7 @@ if [[ "$MODE" != "update" ]]; then
         CYAN='\033[0;36m'
         clear
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
-        echo -e "${GREEN}${BOLD}                   SYSWARDEN v0.26.3 - PRE-FLIGHT CHECKLIST                     ${NC}"
+        echo -e "${GREEN}${BOLD}                   SYSWARDEN v0.27.0 - PRE-FLIGHT CHECKLIST                     ${NC}"
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
         echo -e "Before proceeding with the deployment, please ensure you have the following"
         echo -e "information ready. If you lack any required data, press [Ctrl+C] to abort,"
