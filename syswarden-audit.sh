@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# SysWarden v0.28.0 - DevSecOps Audit & Compliance Tool
+# SysWarden v0.29.0 - DevSecOps Audit & Compliance Tool
 # Copyright (C) 2026 duggytuxy - Laurent M.
 #
 # This program is free software: you can redistribute it and/or modify
@@ -475,6 +475,17 @@ if [[ "$RUN_ALL" -eq 1 || "$USER_PHASES" == *" 4 "* ]]; then
                 pass "Strict Regex Anchoring is applied (Log Spoofing vector neutralized)."
             else
                 fail "Strict Regex Anchoring missing in the portscan filter."
+            fi
+
+            # --- PURPLE TEAM / MODSECURITY CHECK ---
+            if [[ -f "/etc/fail2ban/filter.d/syswarden-modsec.conf" ]]; then
+                if fail2ban-client status 2>/dev/null | grep -q "syswarden-modsec"; then
+                    pass "Purple Team Integration VERIFIED: ModSecurity WAF jail (syswarden-modsec) is active."
+                else
+                    fail "Purple Team Integration FAILED: ModSecurity filter exists but jail is inactive."
+                fi
+            else
+                info "Purple Team Integration N/A: ModSecurity WAF not detected."
             fi
 
             IGNORE_IPS=$(fail2ban-client get sshd ignoreip 2>/dev/null || true)

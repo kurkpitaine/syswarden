@@ -39,7 +39,7 @@ TMP_DIR=$(mktemp -d -t syswarden-install-XXXXXX)
 chmod 0700 "$TMP_DIR"
 # ------------------------------------
 
-VERSION="v0.28.0"
+VERSION="v0.29.0"
 ACTIVE_PORTS=""
 SYSWARDEN_DIR="/etc/syswarden"
 WHITELIST_FILE="$SYSWARDEN_DIR/whitelist.txt"
@@ -1757,7 +1757,7 @@ EOF
             # 3. Allow WireGuard UDP port for tunnel establishment
             firewall-cmd --permanent --add-port="${WG_PORT:-51820}/udp" >/dev/null 2>&1 || true
 
-            # --- STRICT ZERO TRUST HIERARCHY (v0.28.0) - DEBIAN PARITY) ---
+            # --- STRICT ZERO TRUST HIERARCHY (v0.29.0) - DEBIAN PARITY) ---
 
             # Priority -1000: Highest priority. Allow SSH & Dashboard strictly from VPN.
             firewall-cmd --permanent --add-rich-rule="rule priority='-1000' family='ipv4' source address='${WG_SUBNET}' port port='${SSH_PORT:-22}' protocol='tcp' accept" >/dev/null 2>&1 || true
@@ -4112,6 +4112,118 @@ bantime  = 24h
 EOF
         fi
 
+        # 52. DYNAMIC DETECTION: TLS/SSL LAYER ATTACKS (NGINX)
+        if [[ -d "/etc/nginx" ]] && command -v nginx >/dev/null 2>&1; then
+            log "INFO" "Nginx detected. Preparing TLS error logging for Syswarden."
+
+            NGINX_CONF="/etc/nginx/nginx.conf"
+            NGINX_LOG="/var/log/nginx/error.log"
+
+            # --- HOTFIX: AUTOMATED NGINX LOG LEVEL HARDENING ---
+            if grep -qE "^\s*error_log\s+.*info;" "$NGINX_CONF" 2>/dev/null; then
+                log "INFO" "Nginx error_log is already set to 'info'. No changes needed."
+            elif [[ -f "$NGINX_CONF" ]]; then
+                log "INFO" "Modifying Nginx error_log to 'info' level to expose TLS attacks..."
+                cp "$NGINX_CONF" "${NGINX_CONF}.syswarden.bak"
+
+                # Safely replace existing error_log directive (commented or active) with the info level
+                if grep -q "error_log" "$NGINX_CONF"; then
+                    sed -i -E 's|^\s*#?\s*error_log\s+.*|error_log /var/log/nginx/error.log info;|' "$NGINX_CONF"
+                else
+                    # If absolutely no error_log exists, inject it at the top of the file
+                    sed -i '1i error_log /var/log/nginx/error.log info;' "$NGINX_CONF"
+                fi
+
+                # Verify Nginx syntax before applying to prevent web server crash
+                if nginx -t >/dev/null 2>&1; then
+                    if command -v systemctl >/dev/null 2>&1; then
+                        systemctl reload nginx >/dev/null 2>&1 || true
+                    fi
+                    log "INFO" "Nginx TLS logging enabled and reloaded successfully."
+                else
+                    log "ERROR" "Nginx syntax check failed. Reverting changes to prevent crash."
+                    mv "${NGINX_CONF}.syswarden.bak" "$NGINX_CONF"
+                fi
+            fi
+            # ----------------------------------------------------
+
+            # Ensure the log file exists so Fail2ban doesn't crash on startup
+            if [[ ! -f "$NGINX_LOG" ]]; then
+                touch "$NGINX_LOG"
+                # Handle Alpine (nginx:nginx) vs Ubuntu (www-data:adm) automatically
+                chown nginx:nginx "$NGINX_LOG" 2>/dev/null || chown www-data:adm "$NGINX_LOG" 2>/dev/null || chown root:root "$NGINX_LOG"
+                chmod 640 "$NGINX_LOG"
+            fi
+
+            # Create Filter for TLS Handshake failures, SNI mismatch, and mTLS bypass attempts
+            if [[ ! -f "/etc/fail2ban/filter.d/syswarden-tls-guard.conf" ]]; then
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-tls-guard.conf
+[Definition]
+# [DEVSECOPS FIX] Non-greedy parsing to catch core SSL errors natively emitted by Nginx
+failregex = ^.*? \[info\] \d+#\d+: \*\d+ SSL_do_handshake\(\) failed .*? client: <HOST>
+            ^.*? \[info\] \d+#\d+: \*\d+ peer closed connection in SSL handshake .*? client: <HOST>
+            ^.*? \[error\] \d+#\d+: \*\d+ no "ssl_certificate" is defined in server listening on SSL port .*? client: <HOST>
+            ^.*? \[error\] \d+#\d+: \*\d+ client SSL certificate verify error: .*? client: <HOST>
+ignoreregex = 
+EOF
+            fi
+
+            cat <<EOF >>/etc/fail2ban/jail.local
+
+# --- TLS/SSL Protocol & SNI Protection ---
+[syswarden-tls-guard]
+enabled  = true
+port     = https,443,8443
+filter   = syswarden-tls-guard
+logpath  = $NGINX_LOG
+backend  = auto
+# Policy: 10 SSL errors in 1 minute indicates active TLS Fuzzing or massive direct IP scanning.
+maxretry = 10
+findtime = 60
+bantime  = 24h
+EOF
+        fi
+
+        # 53. DYNAMIC DETECTION: TLS/SSL LAYER ATTACKS (APACHE)
+        APACHE_ERR_LOG=""
+        if [[ -f "/var/log/apache2/error.log" ]]; then
+            APACHE_ERR_LOG="/var/log/apache2/error.log" # Debian/Ubuntu
+        elif [[ -f "/var/log/httpd/error_log" ]]; then
+            APACHE_ERR_LOG="/var/log/httpd/error_log" # RHEL/CentOS/Alma/Alpine
+        fi
+
+        if [[ -n "$APACHE_ERR_LOG" ]]; then
+            log "INFO" "Apache error logs detected. Enabling mod_ssl Protocol Guard."
+
+            # Create Filter for Apache mod_ssl TLS Handshake failures, SNI mismatch, and mTLS bypass attempts
+            if [[ ! -f "/etc/fail2ban/filter.d/syswarden-apache-tls.conf" ]]; then
+                cat <<'EOF' >/etc/fail2ban/filter.d/syswarden-apache-tls.conf
+[Definition]
+# [DEVSECOPS FIX] Targets mod_ssl specific error codes (AH02033 for SNI bypass, AH02261/AH02008 for handshake/cert failures)
+failregex = ^.*? \[ssl:(?:error|warn|info)\].*? \[client <HOST>(?::\d+)?\] AH\d+: .*?(?:certificate verify failed|SSL Library Error|handshake failed|SSL_accept failed|peer closed connection).*$
+            ^.*? \[ssl:(?:error|warn|info)\].*? \[client <HOST>(?::\d+)?\] SSL Library Error: .*$
+            ^.*? \[core:(?:error|warn|info)\].*? \[client <HOST>(?::\d+)?\] AH02033: No hostname was provided via SNI.*$
+            ^.*? \[ssl:(?:error|warn)\].*? \[client <HOST>(?::\d+)?\] AH02039: Certificate Verification: Error.*$
+ignoreregex = 
+EOF
+            fi
+
+            cat <<EOF >>/etc/fail2ban/jail.local
+
+# --- Apache mod_ssl Protocol & SNI Protection ---
+[syswarden-apache-tls]
+enabled  = true
+port     = https,443,8443
+filter   = syswarden-apache-tls
+logpath  = $APACHE_ERR_LOG
+backend  = auto
+# Policy: 10 SSL errors in 1 minute indicates active TLS Fuzzing or massive direct IP scanning.
+maxretry = 10
+findtime = 60
+bantime  = 24h
+EOF
+        fi
+
         # --- HOTFIX: RHEL/ALMA CHICKEN & EGG LOG FIX ---
         if [[ ! -f /var/log/fail2ban.log ]]; then
             touch /var/log/fail2ban.log
@@ -4576,7 +4688,7 @@ def monitor_logs():
     p = select.poll()
     p.register(f.stdout)
 
-    # v0.28.0 Logic: Universal Firewall Netfilter Regex (Matches Standard, Docker, GeoIP and ASN)
+    # v0.29.0 Logic: Universal Firewall Netfilter Regex (Matches Standard, Docker, GeoIP and ASN)
     regex_fw = re.compile(r"\[SysWarden-(BLOCK|DOCKER|GEO|ASN)\].*?SRC=([\d\.]+)")
     regex_dpt = re.compile(r"DPT=(\d+)")
     regex_f2b = re.compile(r"\[([a-zA-Z0-9_-]+)\]\s+Ban\s+([\d\.]+)")
@@ -4664,15 +4776,17 @@ def monitor_logs():
                     elif any(x in jail for x in ["privesc", "auditd", "proxmox"]): cats.extend(["15", "18"])
                     # 12. Web App Logins (Auth/CMS/SSO/Generic)
                     elif any(x in jail for x in ["auth", "generic-auth", "wordpress", "drupal", "nextcloud", "phpmyadmin", "laravel", "grafana", "zabbix", "gitea", "cockpit", "vaultwarden", "sso", "odoo", "prestashop", "atlassian"]): cats.extend(["18", "21"])
-                    # 13. VPN 
+                    # 13. TLS/SSL Layer Attacks (TLS Fuzzing & SNI Scanners)
+                    elif "tls" in jail: cats.extend(["14", "15", "21"])
+                    # 14. VPN
                     elif "wireguard" in jail or "openvpn" in jail: cats.extend(["15", "18"])
-                    # 14. VoIP
+                    # 15. VoIP
                     elif "asterisk" in jail: cats.extend(["8", "18"])
-                    # 15. Portscan
+                    # 16. Portscan
                     elif "portscan" in jail: cats.extend(["14"])
-                    # 16. Persistent Attacker (Recidive) / Horizontal Movement
+                    # 17. Persistent Attacker (Recidive) / Horizontal Movement
                     elif "recidive" in jail: cats.extend(["14", "15", "18"])
-                    # 17. Fallback
+                    # 18. Fallback
                     else: cats.extend(["15", "18"])
 
                     cats = list(set(cats)) # Deduplicate array before sending
@@ -5172,7 +5286,7 @@ uninstall_syswarden() {
     for filter in nginx-scanner mariadb-auth mongodb-guard syswarden-privesc syswarden-portscan \
         syswarden-revshell syswarden-aibots syswarden-badbots syswarden-httpflood syswarden-webshell \
         syswarden-sqli-xss syswarden-secretshunter syswarden-ssrf syswarden-jndi-ssti syswarden-apimapper \
-        syswarden-modsec \
+        syswarden-modsec syswarden-tls-guard syswarden-apache-tls \
         syswarden-lfi-advanced syswarden-vaultwarden syswarden-sso syswarden-silent-scanner syswarden-recidive syswarden-generic-auth \
         syswarden-proxy-abuse syswarden-jenkins syswarden-gitlab syswarden-redis syswarden-rabbitmq \
         syswarden-idor-enum syswarden-odoo syswarden-prestashop syswarden-atlassian \
@@ -5499,7 +5613,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v0.28.0 - TELEMETRY BACKEND
+# SYSWARDEN v0.29.0 - TELEMETRY BACKEND
 # ==============================================================================
 function setup_telemetry_backend() {
     log "INFO" "Installation of the advanced telemetry engine (Backend)..."
@@ -5716,7 +5830,7 @@ if command -v fail2ban-client >/dev/null && timeout 2 fail2ban-client ping >/dev
                     *secretshunter*|*hunter*|*ssrf*|*idor*) MITRE_ID="T1552"; MITRE_NAME="Unsecured Credentials / Cloud Discovery" ;;
                     *proxy-abuse*|*squid*) MITRE_ID="T1090"; MITRE_NAME="Connection Proxy" ;;
                     *portscan*) MITRE_ID="T1046"; MITRE_NAME="Network Service Discovery" ;;
-                    *scanner*|*bot*|*mapper*|*enum*) MITRE_ID="T1595"; MITRE_NAME="Active Scanning" ;;
+                    *scanner*|*bot*|*mapper*|*enum*|*tls*) MITRE_ID="T1595"; MITRE_NAME="Active Scanning / TLS Fuzzing" ;;
                     *flood*|*dos*) MITRE_ID="T1498.001"; MITRE_NAME="Direct Network Flood" ;;
                     *wireguard*|*openvpn*) MITRE_ID="T1136"; MITRE_NAME="External Remote Services" ;;
                     *ssh*|*auth*|*telnet*|*ftp*|*mail*|*postfix*|*dovecot*|*mysql*|*mariadb*|*redis*|*rabbitmq*|*zabbix*|*grafana*|*vaultwarden*|*sso*|*odoo*|*prestashop*|*atlassian*|*jenkins*|*gitlab*|*proxmox*|*cockpit*|*nextcloud*) MITRE_ID="T1110"; MITRE_NAME="Brute Force / Password Guessing" ;;
@@ -5729,7 +5843,7 @@ if command -v fail2ban-client >/dev/null && timeout 2 fail2ban-client ping >/dev
                 # --- RISK RADAR CALCULATION ---
                 if [[ "$JAIL" =~ (sqli|xss|lfi|revshell|webshell|ssti|ssrf|jndi|modsec) ]]; then R_EXP=$((R_EXP + BANNED_COUNT))
                 elif [[ "$JAIL" =~ (ssh|auth|privesc|prestashop) ]]; then R_BF=$((R_BF + BANNED_COUNT))
-                elif [[ "$JAIL" =~ (scan|bot|mapper|enum|hunter) ]]; then R_REC=$((R_REC + BANNED_COUNT))
+                elif [[ "$JAIL" =~ (scan|bot|mapper|enum|hunter|tls) ]]; then R_REC=$((R_REC + BANNED_COUNT))
                 elif [[ "$JAIL" =~ (flood) ]]; then R_DOS=$((R_DOS + BANNED_COUNT))
                 else R_ABU=$((R_ABU + BANNED_COUNT)); fi
                 
@@ -5779,7 +5893,7 @@ if [[ -n "$TOP_STATS" ]]; then
             else
                 case "${jail,,}" in
                     *ssh*) PORT="22" ;;
-                    *http*|*web*|*nginx*|*apache*|*prestashop*|*sqli*|*xss*|*lfi*) PORT="80/443" ;;
+                    *http*|*web*|*nginx*|*apache*|*prestashop*|*sqli*|*xss*|*lfi*|*tls*) PORT="443" ;;
                     *ftp*) PORT="21" ;;
                     *mail*|*postfix*|*exim*|*dovecot*) PORT="25/143" ;;
                     *mysql*|*mariadb*) PORT="3306" ;;
@@ -5868,7 +5982,7 @@ EOF
 }
 
 # ==============================================================================
-# SYSWARDEN v0.28.0 - NGINX / APACHESECURE DASHBOARD (ENTERPRISE SAAS UI / SPA / CSP)
+# SYSWARDEN v0.29.0 - NGINX / APACHESECURE DASHBOARD (ENTERPRISE SAAS UI / SPA / CSP)
 # ==============================================================================
 function generate_dashboard() {
     log "INFO" "Generating the Enterprise SaaS Nginx Dashboard (SPA/CSP)..."
@@ -5901,73 +6015,112 @@ function generate_dashboard() {
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
     
     <style>
+        /* --- THEME DEFINITIONS --- */
         :root[data-bs-theme="light"] {
             --sw-bg: #ffffff;
-            --sw-nav-bg: #ffffff;
+            --sw-nav-bg: #f8f9fa;
             --sw-card-bg: #ffffff;
-            --sw-border: #e5e7eb;
-            --sw-text: #1f2937;
-            --sw-text-muted: #6b7280;
+            --sw-border: #e2e8f0;
+            --sw-text: #1e293b;
+            --sw-text-muted: #64748b;
             --sw-brand-icon: #2563eb;
+            --sw-danger: #dc2626;
+            --sw-success: #16a34a;
         }
         :root[data-bs-theme="dark"] {
             --sw-bg: #000000;
             --sw-nav-bg: #09090b;
-            --sw-card-bg: #09090b;
-            --sw-border: rgba(255, 255, 255, 0.12);
-            --sw-text: #ffffff;
+            --sw-card-bg: #0a0a0a;
+            --sw-border: #27272a;
+            --sw-text: #f8fafc;
             --sw-text-muted: #a1a1aa;
             --sw-brand-icon: #3b82f6;
+            --sw-danger: #ef4444;
+            --sw-success: #10b981;
         }
 
+        /* --- GLOBAL TYPOGRAPHY & LAYOUT --- */
         body { 
-            font-family: 'Roboto', sans-serif;
-            background-color: var(--sw-bg); color: var(--sw-text);
-            transition: background-color 0.3s ease, color 0.3s ease;
+            font-family: 'Roboto', -apple-system, sans-serif;
+            background-color: var(--sw-bg); 
+            color: var(--sw-text);
+            transition: background-color 0.2s ease, color 0.2s ease;
             -webkit-font-smoothing: antialiased;
+            font-size: 0.85rem;
         }
-        .font-mono { font-weight: 500; }
+        .font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-weight: 500; }
+        .main-wrapper { flex-grow: 1; overflow-y: auto; overflow-x: hidden; scroll-behavior: smooth; height: calc(100vh - 55px); }
 
-        .main-wrapper { flex-grow: 1; overflow-y: auto; overflow-x: hidden; scroll-behavior: smooth; height: calc(100vh - 65px); }
-
+        /* --- NAVBAR --- */
         .top-navbar {
-            height: 65px; min-height: 65px;
-            background-color: var(--sw-nav-bg); border-bottom: 1px solid var(--sw-border);
+            height: 55px; min-height: 55px;
+            background-color: var(--sw-nav-bg); 
+            border-bottom: 1px solid var(--sw-border);
             display: flex; align-items: center; justify-content: space-between; padding: 0 1.5rem;
         }
-        .theme-toggle-btn { background: transparent; border: none; color: var(--sw-text); cursor: pointer; display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%; transition: background 0.2s; }
+        .theme-toggle-btn { background: transparent; border: none; color: var(--sw-text); cursor: pointer; display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 4px; transition: background 0.2s; }
         .theme-toggle-btn:hover { background: var(--sw-border); }
 
-        .card { background-color: var(--sw-card-bg); border: 1px solid var(--sw-border); border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-        .card-header { border-bottom: 1px solid var(--sw-border); font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; font-size: 0.80rem; color: var(--sw-text-muted); }
+        /* --- WAZUH STYLE CARDS --- */
+        .card { 
+            background-color: var(--sw-card-bg); 
+            border: 1px solid var(--sw-border); 
+            border-radius: 4px; 
+            box-shadow: none; 
+        }
+        .card-header { 
+            background-color: transparent;
+            border-bottom: 1px solid var(--sw-border); 
+            font-weight: 700; 
+            letter-spacing: 0.5px; 
+            text-transform: uppercase; 
+            font-size: 0.75rem; 
+            color: var(--sw-text-muted); 
+            padding: 0.75rem 1.25rem;
+        }
+        .card-body { padding: 1.25rem; }
+
+        /* --- METRICS --- */
+        .card-l3 { border-top: 3px solid var(--sw-brand-icon) !important; }
+        .card-l7 { border-top: 3px solid var(--sw-danger) !important; }
+        .card-wl { border-top: 3px solid var(--sw-success) !important; }
+
+        .stat-value { font-size: 1.75rem; font-weight: 800; line-height: 1.1; letter-spacing: -0.5px; }
+        .stat-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: var(--sw-text-muted); font-weight: 700; }
         
-        .card-l3 { border-left: 4px solid var(--sw-brand-icon) !important; }
-        .card-l7 { border-left: 4px solid #ef4444 !important; }
-        .card-wl { border-left: 4px solid #10b981 !important; }
-
-        .stat-value { font-size: clamp(1.2rem, 1.6vw, 1.6rem); font-weight: 800; line-height: 1.1; letter-spacing: -0.5px; }
-        .stat-label { font-size: 0.80rem; text-transform: uppercase; letter-spacing: 1px; color: var(--sw-text-muted); font-weight: 700; }
+        /* --- TABLES & SCROLLBARS --- */
         .table-container { max-height: 350px; overflow-y: auto; }
-
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: var(--sw-border); border-radius: 10px; }
-        ::-webkit-scrollbar-corner { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--sw-border); border-radius: 4px; }
         
-        .table { --bs-table-bg: transparent !important; margin-bottom: 0 !important; }
-        .table > :not(caption) > * > * { background-color: transparent !important; border-color: var(--sw-border) !important; }
-        .ip-font { font-size: 85% !important; }
+        .table { --bs-table-bg: transparent !important; margin-bottom: 0 !important; color: var(--sw-text); }
+        .table > :not(caption) > * > * { background-color: transparent !important; border-color: var(--sw-border) !important; padding: 0.75rem 1.25rem; }
+        .table thead th { position: sticky; top: 0; background: var(--sw-card-bg) !important; z-index: 2; border-bottom: 2px solid var(--sw-border) !important; font-size: 0.70rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+        .ip-font { font-size: 85% !important; font-weight: 600; }
+        
+        /* --- UTILITIES --- */
+        .badge-wazuh { font-size: 0.70rem; padding: 0.35em 0.65em; border-radius: 3px; font-weight: 600; }
     </style>
 </head>
 <body class="d-flex flex-column" style="height: 100vh; margin: 0;">
 
     <nav class="top-navbar">
         <div class="d-flex align-items-center gap-3">
-            <svg style="color: var(--sw-brand-icon);" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
-            <h5 class="mb-0 fw-bold d-none d-md-block text-uppercase" style="letter-spacing: 0.5px; font-size: 1.1rem; color: var(--sw-text);">SYSWARDEN v0.28.0</h5>
+            <svg style="color: var(--sw-brand-icon);" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+            <div class="d-none d-md-flex align-items-baseline gap-2">
+                <h5 class="mb-0 fw-bold text-uppercase" style="letter-spacing: 0.5px; font-size: 1rem; color: var(--sw-text);">SYSWARDEN</h5>
+                <span class="font-mono text-muted" style="font-size: 0.80rem;">v0.29.0</span>
+            </div>
         </div>
         
         <div class="d-flex align-items-center gap-3 gap-md-4">
+            <!-- FILTRATION EFFICIENCY NAVBAR INJECTION -->
+            <div class="d-none d-xl-flex align-items-center gap-3 border-end pe-3 font-mono" style="border-color: var(--sw-border) !important; font-size: 0.80rem;">
+                <div title="Automated Noise Blocked (L2/L3)"><span class="text-muted">Noise:</span> <span id="nav-noise-pct" style="color: var(--sw-success); font-weight: 700;">--%</span></div>
+                <div title="Actionable Signals (L7)"><span class="text-muted">Signal:</span> <span id="nav-signal-pct" style="color: var(--sw-danger); font-weight: 700;">--%</span></div>
+            </div>
+
             <div class="d-none d-md-flex align-items-center gap-4 border-end pe-4" style="border-color: var(--sw-border) !important;">
                 <a href="https://github.com/duggytuxy/syswarden" target="_blank" rel="noopener noreferrer" class="text-decoration-none small font-mono d-flex align-items-center gap-2" style="color: var(--sw-text);">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
@@ -5993,37 +6146,37 @@ function generate_dashboard() {
     </nav>
 
     <main class="main-wrapper">
-        <div class="container-fluid px-xl-5 px-4 py-4">
+        <div class="container-fluid px-xl-4 px-3 py-4">
             
+            <!-- SYSTEM HARDWARE & METRICS -->
             <div class="card mb-4">
-                <div class="card-body py-3 px-4 d-flex flex-column gap-2 justify-content-center" style="min-height: 70px;">
+                <div class="card-body py-3 d-flex flex-column gap-2">
                     <div class="d-flex flex-wrap gap-4 align-items-center border-bottom pb-2" style="border-color: var(--sw-border) !important;">
-                        <div class="font-mono small"><span class="text-muted">Cores:</span> <span id="hw-cores" class="ms-1">--</span></div>
-                        <div class="font-mono small"><span class="text-muted">Arch:</span> <span id="hw-arch" class="ms-1">--</span></div>
-                        <div class="font-mono small"><span class="text-muted">OS:</span> <span id="hw-os" class="ms-1">--</span></div>
-                        <div class="font-mono small d-flex align-items-center"><span class="text-muted me-1">CPU:</span> <span class="text-truncate" style="max-width: 250px;" id="hw-cpu" title="CPU Model">--</span></div>
-                        <div class="font-mono small"><span class="text-muted">Last update:</span> <span id="hw-update" class="ms-1">--</span></div>
+                        <div class="font-mono"><span class="text-muted">Cores:</span> <span id="hw-cores" class="ms-1 fw-bold">--</span></div>
+                        <div class="font-mono"><span class="text-muted">Arch:</span> <span id="hw-arch" class="ms-1 fw-bold">--</span></div>
+                        <div class="font-mono"><span class="text-muted">OS:</span> <span id="hw-os" class="ms-1 fw-bold">--</span></div>
+                        <div class="font-mono d-flex align-items-center"><span class="text-muted me-1">CPU:</span> <span class="text-truncate fw-bold" style="max-width: 300px;" id="hw-cpu">--</span></div>
+                        <div class="font-mono"><span class="text-muted">Last sync:</span> <span id="hw-update" class="ms-1 fw-bold">--</span></div>
                     </div>
                     <div class="d-flex flex-wrap gap-4 align-items-center border-bottom pb-2 pt-1" style="border-color: var(--sw-border) !important;">
-                        <div class="font-mono small"><span class="text-muted">Uptime:</span> <span id="sys-uptime" class="ms-1 text-primary">--</span></div>
-                        <div class="font-mono small"><span class="text-muted">Load Avg (1,5,15m):</span> <span id="sys-load" class="ms-1">--</span></div>
-                        <div class="font-mono small"><span class="text-muted">RAM:</span> <span id="sys-ram" class="ms-1">-- MB</span></div>
-                        <div class="font-mono small"><span class="text-muted">Storage (Root):</span> <span id="sys-disk" class="ms-1">-- GB</span></div>
+                        <div class="font-mono"><span class="text-muted">Uptime:</span> <span id="sys-uptime" class="ms-1" style="color: var(--sw-brand-icon); font-weight: 700;">--</span></div>
+                        <div class="font-mono"><span class="text-muted">Load Avg:</span> <span id="sys-load" class="ms-1 fw-bold">--</span></div>
+                        <div class="font-mono"><span class="text-muted">RAM:</span> <span id="sys-ram" class="ms-1 fw-bold">-- MB</span></div>
+                        <div class="font-mono"><span class="text-muted">Storage:</span> <span id="sys-disk" class="ms-1 fw-bold">-- GB</span></div>
                     </div>
-                    <div class="d-flex flex-wrap gap-3 align-items-center border-bottom pb-2 pt-1 font-mono small" id="sys-services-list" style="border-color: var(--sw-border) !important;">
-                        </div>
-                    <div class="d-flex flex-wrap gap-3 align-items-center pt-1 font-mono small" id="sys-ports-list">
-                        </div>
+                    <div class="d-flex flex-wrap gap-3 align-items-center border-bottom pb-2 pt-1 font-mono" id="sys-services-list" style="border-color: var(--sw-border) !important;"></div>
+                    <div class="d-flex flex-wrap gap-3 align-items-center pt-1 font-mono" id="sys-ports-list"></div>
                 </div>
             </div>
             
-            <div class="row g-4 mb-4">
+            <!-- LAYER 3 & LAYER 7 METRICS -->
+            <div class="row g-3 mb-4">
                 <div class="col-xxl-4 col-lg-6">
                     <div class="card card-l3 h-100">
-                        <div class="card-body p-4">
-                            <div class="stat-label mb-3">L3 Kernel Blocks (Global)</div>
-                            <div class="stat-value text-primary font-mono mb-3" id="l3-global">0</div>
-                            <div class="d-flex justify-content-between border-top pt-3 font-mono small text-muted" style="border-color: var(--sw-border) !important;">
+                        <div class="card-body">
+                            <div class="stat-label mb-2">L3 Kernel Blocks (Global)</div>
+                            <div class="stat-value font-mono mb-3" style="color: var(--sw-brand-icon);" id="l3-global">0</div>
+                            <div class="d-flex justify-content-between border-top pt-2 font-mono text-muted" style="border-color: var(--sw-border) !important; font-size: 0.80rem;">
                                 <span>GeoIP: <strong class="text-body" id="l3-geoip">0</strong></span>
                                 <span>ASN: <strong class="text-body" id="l3-asn">0</strong></span>
                             </div>
@@ -6033,10 +6186,10 @@ function generate_dashboard() {
 
                 <div class="col-xxl-4 col-lg-6">
                     <div class="card card-l7 h-100">
-                        <div class="card-body p-4">
-                            <div class="stat-label mb-3">L7 Active Bans (Fail2ban)</div>
-                            <div class="stat-value text-danger font-mono mb-3" id="l7-banned">0</div>
-                            <div class="d-flex justify-content-between border-top pt-3 font-mono small text-muted" style="border-color: var(--sw-border) !important;">
+                        <div class="card-body">
+                            <div class="stat-label mb-2">L7 Active Bans (Fail2ban)</div>
+                            <div class="stat-value font-mono mb-3" style="color: var(--sw-danger);" id="l7-banned">0</div>
+                            <div class="d-flex justify-content-between border-top pt-2 font-mono text-muted" style="border-color: var(--sw-border) !important; font-size: 0.80rem;">
                                 <span>Active Guard Jails:</span>
                                 <strong class="text-body" id="l7-jails">0</strong>
                             </div>
@@ -6046,12 +6199,12 @@ function generate_dashboard() {
 
                 <div class="col-xxl-4 col-lg-12">
                     <div class="card card-wl h-100">
-                        <div class="card-body p-4">
-                            <div class="d-flex justify-content-between align-items-start mb-3">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-start mb-2">
                                 <div class="stat-label">Trusted Hosts (Whitelist)</div>
-                                <span class="badge bg-success bg-opacity-10 text-success rounded-pill font-mono" id="wl-count">0</span>
+                                <span class="badge wazuh-badge font-mono" style="background-color: rgba(16, 185, 129, 0.15); color: var(--sw-success); border: 1px solid rgba(16, 185, 129, 0.3);" id="wl-count">0</span>
                             </div>
-                            <div class="table-container pe-2 font-mono small text-success" style="max-height: 70px;">
+                            <div class="table-container pe-2 font-mono" style="max-height: 60px; font-size: 0.80rem; color: var(--sw-success);">
                                 <ul class="list-unstyled mb-0" id="whitelist-ips-list"></ul>
                             </div>
                         </div>
@@ -6059,12 +6212,13 @@ function generate_dashboard() {
                 </div>
             </div>
 
-            <div class="row g-4 mb-4">
+            <!-- RISK & TOP ATTACKERS -->
+            <div class="row g-3 mb-4">
                 <div class="col-xl-4">
                     <div class="card h-100">
-                        <div class="card-header bg-transparent pt-4 pb-0 px-4 d-flex align-items-center gap-2">Global Risk Vectors</div>
-                        <div class="card-body p-4 d-flex align-items-center justify-content-center">
-                            <div style="position: relative; height: 280px; width: 100%;">
+                        <div class="card-header">Global Risk Vectors</div>
+                        <div class="card-body d-flex align-items-center justify-content-center">
+                            <div style="position: relative; height: 260px; width: 100%;">
                                 <canvas id="riskChart"></canvas>
                             </div>
                         </div>
@@ -6073,15 +6227,15 @@ function generate_dashboard() {
 
                 <div class="col-xl-8">
                     <div class="card h-100">
-                        <div class="card-header bg-transparent pt-4 pb-3 px-4 border-bottom-0">Top Attackers (OSINT History)</div>
+                        <div class="card-header">Top Attackers (OSINT History)</div>
                         <div class="card-body p-0">
-                            <div class="table-responsive table-container" style="max-height: 310px;">
-                                <table class="table table-sm mb-0 small">
-                                    <thead style="position: sticky; top: 0; background: var(--sw-card-bg); z-index: 2; border: none;">
+                            <div class="table-responsive table-container" style="max-height: 295px;">
+                                <table class="table table-sm mb-0">
+                                    <thead>
                                         <tr>
-                                            <th class="text-muted small fw-normal pb-2 ps-4">IP ADDRESS</th>
-                                            <th class="text-muted small fw-normal pb-2">PORT</th>
-                                            <th class="text-end text-muted small fw-normal pb-2 pe-4">HITS</th>
+                                            <th>IP ADDRESS</th>
+                                            <th>PORT</th>
+                                            <th class="text-end">HITS</th>
                                         </tr>
                                     </thead>
                                     <tbody id="top-ips-list"></tbody>
@@ -6092,18 +6246,19 @@ function generate_dashboard() {
                 </div>
             </div>
 
-            <div class="row g-4 mb-4">
+            <!-- JAILS & BANNED IPS -->
+            <div class="row g-3 mb-4">
                 <div class="col-xl-4">
                     <div class="card h-100">
-                        <div class="card-header bg-transparent pt-4 pb-3 px-4 border-bottom-0">Jails Load Distribution</div>
+                        <div class="card-header">Jails Load Distribution</div>
                         <div class="card-body p-0">
-                            <div class="table-responsive table-container" style="max-height: 450px;">
-                                <table class="table table-sm mb-0 small">
-                                    <thead style="position: sticky; top: 0; background: var(--sw-card-bg); z-index: 2; border: none;">
+                            <div class="table-responsive table-container" style="max-height: 400px;">
+                                <table class="table table-sm mb-0">
+                                    <thead>
                                         <tr>
-                                            <th class="text-muted small fw-normal pb-2 ps-4">TARGET JAIL</th>
-                                            <th class="text-muted small fw-normal pb-2">MITRE ATT&CK</th>
-                                            <th class="text-end text-muted small fw-normal pb-2 pe-4">LOAD</th>
+                                            <th>TARGET JAIL</th>
+                                            <th>MITRE ATT&CK</th>
+                                            <th class="text-end">LOAD</th>
                                         </tr>
                                     </thead>
                                     <tbody id="top-jails-list"></tbody>
@@ -6115,16 +6270,16 @@ function generate_dashboard() {
 
                 <div class="col-xl-8">
                     <div class="card h-100">
-                        <div class="card-header bg-transparent pt-4 pb-3 px-4 border-bottom-0">L7 Banned IP Registry (Live Jail Allocations)</div>
+                        <div class="card-header">L7 Banned IP Registry (Live Jail Allocations)</div>
                         <div class="card-body p-0">
-                            <div class="table-responsive table-container" style="max-height: 450px;">
-                                <table class="table table-sm mb-0 small">
-                                    <thead style="position: sticky; top: 0; background: var(--sw-card-bg); z-index: 2; border: none;">
+                            <div class="table-responsive table-container" style="max-height: 400px;">
+                                <table class="table table-sm mb-0">
+                                    <thead>
                                         <tr>
-                                            <th class="text-muted small fw-normal pb-2 ps-4" style="min-width: 150px;">IP ADDRESS</th>
-                                            <th class="text-muted small fw-normal pb-2" style="min-width: 150px;">TARGET JAIL</th>
-                                            <th class="text-muted small fw-normal pb-2 ps-3" style="min-width: 200px;">MITRE ATT&CK</th>
-                                            <th class="text-muted small fw-normal pb-2 ps-4 pe-4" style="min-width: 250px;">TRIGGER PAYLOAD</th>
+                                            <th style="min-width: 140px;">IP ADDRESS</th>
+                                            <th style="min-width: 140px;">TARGET JAIL</th>
+                                            <th style="min-width: 180px;">MITRE ATT&CK</th>
+                                            <th style="min-width: 250px;">TRIGGER PAYLOAD</th>
                                         </tr>
                                     </thead>
                                     <tbody id="banned-ips-list"></tbody>
@@ -6135,38 +6290,7 @@ function generate_dashboard() {
                 </div>
             </div>
 
-            <div class="row g-4 mb-4">
-                <div class="col-12">
-                    <div class="card h-100">
-                        <div class="card-header bg-transparent pt-4 pb-0 px-4 d-flex align-items-center gap-2">
-                            Filtration Efficiency (Signal vs Noise)
-                        </div>
-                        <div class="card-body p-4">
-                            <div class="row align-items-center">
-                                <div class="col-md-6 mb-4 mb-md-0" style="border-right: 1px solid var(--sw-border);">
-                                    <div class="d-flex justify-content-between small font-mono fw-bold mb-2">
-                                        <span class="text-muted">Automated Noise Blocked (L2/L3 Blocklists)</span>
-                                        <span id="noise-pct" class="text-success">--%</span>
-                                    </div>
-                                    <div class="progress" style="height: 10px; background-color: var(--sw-border);">
-                                        <div id="noise-bar" class="progress-bar bg-success" role="progressbar" style="width: 0%; transition: width 0.5s ease;"></div>
-                                    </div>
-                                </div>
-                                <div class="col-md-6 ps-md-4">
-                                    <div class="d-flex justify-content-between small font-mono fw-bold mb-2">
-                                        <span class="text-muted">Actionable Signals (L7 Fail2ban)</span>
-                                        <span id="signal-pct" class="text-danger">--%</span>
-                                    </div>
-                                    <div class="progress" style="height: 10px; background-color: var(--sw-border);">
-                                        <div id="signal-bar" class="progress-bar bg-danger" role="progressbar" style="width: 0%; transition: width 0.5s ease;"></div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
+            
         </div>
     </main>
 
@@ -6253,16 +6377,16 @@ function generate_dashboard() {
         // --- UI HELPER: MATCH JAIL TO DOUGHNUT CHART COLORS ---
         function getJailBadgeStyle(jailName) {
             const j = jailName.toLowerCase();
-            const baseStyle = 'font-size: 0.70rem; ';
+            const baseStyle = 'padding: 0.35em 0.65em; border-radius: 3px; font-weight: 600; font-size: 0.70rem; ';
             
             if (j.match(/(sqli|xss|lfi|revshell|webshell|ssti|ssrf|jndi|prestashop|atlassian|wordpress|drupal|nginx|apache)/)) 
                 return baseStyle + 'background-color: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239,68,68,0.3);';
-            if (j.match(/(portscan|scan|bot|mapper|enum|hunter|proxy)/)) 
+            if (j.match(/(portscan|scan|bot|mapper|enum|hunter|proxy|tls)/))
                 return baseStyle + 'background-color: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59,130,246,0.3);';
             if (j.match(/(recidive|postfix|dovecot|exim|mail)/)) 
                 return baseStyle + 'background-color: rgba(249, 115, 22, 0.15); color: #f97316; border: 1px solid rgba(249,115,22,0.3);';
             if (j.match(/(flood|limit|ddos)/)) 
-                return baseStyle + 'background-color: rgba(107, 114, 128, 0.15); color: var(--sw-text); border: 1px solid var(--sw-border);';
+                return baseStyle + 'background-color: rgba(161, 161, 170, 0.15); color: var(--sw-text); border: 1px solid var(--sw-border);';
             return baseStyle + 'background-color: rgba(234, 179, 8, 0.15); color: #eab308; border: 1px solid rgba(234,179,8,0.3);';
         }
 
@@ -6312,23 +6436,21 @@ function generate_dashboard() {
                 sysLoadEl.classList.remove('text-success', 'text-warning', 'text-danger');
                 sysLoadEl.classList.add(load1m <= 0.35 ? 'text-success' : load1m <= 0.70 ? 'text-warning' : 'text-danger');
 
-                // Flat Services Listing (Horizontal inline rendering)
+                // Flat Services Listing
                 const srvEl = document.getElementById('sys-services-list');
                 if(data.system.services && srvEl) {
                     srvEl.innerHTML = data.system.services.map(srv => {
                         const shortName = srv.name.split(' ')[0];
-                        // Handle 3 states: active (green), skipped (yellow), offline (red)
                         const statusClass = srv.status === 'active' ? 'text-success' : (srv.status === 'skipped' ? 'text-warning opacity-75' : 'text-danger');
                         return `<span class="text-muted">${shortName}:</span> <span class="${statusClass}">${srv.status.toUpperCase()}</span>`;
                     }).join(' <span class="text-muted opacity-50 px-2">|</span> ');
                 }
 
-                // NEW: Flat Network Ports Listing (Horizontal inline rendering)
+                // Flat Network Ports Listing
                 const portsEl = document.getElementById('sys-ports-list');
                 if(data.system.ports && portsEl) {
                     if (data.system.ports.length > 0) {
                         portsEl.innerHTML = data.system.ports.map(p => {
-                            // Extract just the port number
                             const safePort = (p.port && p.port.trim() !== '' && p.port !== '*') ? p.port : 'N/A';
                             return `<span class="text-muted">${p.protocol || 'TCP'}:</span> <span style="color: var(--sw-brand-icon); font-weight: 700;">${safePort}</span>`;
                         }).join(' <span class="text-muted opacity-50 px-2">|</span> ');
@@ -6358,11 +6480,11 @@ function generate_dashboard() {
                     signalPercent = ((l7Banned / totalThreats) * 100).toFixed(2);
                 }
 
-                document.getElementById('noise-pct').innerText = `${noisePercent}%`;
-                document.getElementById('noise-bar').style.width = `${noisePercent}%`;
-
-                document.getElementById('signal-pct').innerText = `${signalPercent}%`;
-                document.getElementById('signal-bar').style.width = `${signalPercent}%`;
+                // UI Updates: Navbar Injections
+                const navNoise = document.getElementById('nav-noise-pct');
+                if (navNoise) navNoise.innerText = `${noisePercent}%`;
+                const navSignal = document.getElementById('nav-signal-pct');
+                if (navSignal) navSignal.innerText = `${signalPercent}%`;
                 
                 // Inject Doughnut Data
                 if(riskChart && data.layer7.risk_radar) {
@@ -7271,7 +7393,7 @@ if [[ "$MODE" != "update" ]] && [[ "$MODE" != "uninstall" ]]; then
     echo -e "${RED}███████║   ██║   ███████║╚███╔███╔╝██║  ██║██║  ██║██████╔╝███████╗██║ ╚████║${NC}"
     echo -e "${RED}╚══════╝   ╚═╝   ╚══════╝ ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚═╝  ╚═══╝${NC}"
     echo -e "${BLUE}===================================================================================${NC}"
-    echo -e "${GREEN}               Host-based Security Orchestrator for Linux. | v0.28.0                  ${NC}"
+    echo -e "${GREEN}               Host-based Security Orchestrator for Linux. | v0.29.0                  ${NC}"
     echo -e "${BLUE}===================================================================================${NC}\n"
 fi
 
@@ -7310,7 +7432,7 @@ if [[ "$MODE" != "update" ]]; then
         CYAN='\033[0;36m'
         clear
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
-        echo -e "${GREEN}${BOLD}                   SYSWARDEN v0.28.0 - PRE-FLIGHT CHECKLIST                     ${NC}"
+        echo -e "${GREEN}${BOLD}                   SYSWARDEN v0.29.0 - PRE-FLIGHT CHECKLIST                     ${NC}"
         echo -e "${BLUE}${BOLD}==============================================================================${NC}"
         echo -e "Before proceeding with the deployment, please ensure you have the following"
         echo -e "information ready. If you lack any required data, press [Ctrl+C] to abort,"
